@@ -301,7 +301,7 @@ func (ring *Ring) WaitCQEs(waitNr uint32, ts *syscall.Timespec, sigmask *unix.Si
 	return ring.internalGetCQE(toSubmit, waitNr, sigmask)
 }
 
-// liburing: io_uring_submit_and_wait_timeout - https://manpages.debian.org/unstable/liburing-dev/SubmitAndWaitTimeout.3.en.html
+// liburing: io_uring_submit_and_wait_timeout - https://manpages.debian.org/unstable/liburing-dev/io_uring_submit_and_wait_timeout.3.en.html
 func (ring *Ring) SubmitAndWaitTimeout(
 	waitNr uint32, ts *syscall.Timespec, sigmask *unix.Sigset_t,
 ) (*CompletionQueueEvent, error) {
