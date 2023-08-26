@@ -21,6 +21,10 @@ The **giouring** API is very similar to the [liburing](https://github.com/axboe/
 * **giouring** was tested on kernel version *6.2.0-27-generic*. Keep in mind that when running unit tests on older kernel versions, some tests may fail because the older kernel may not support some functionality. This will be fixed in the future.
 * Test coverage is currently low, but it will be systematically expanded.
 
+### Documentation
+
+[![Go Reference](https://pkg.go.dev/badge/github.com/pawelgaczynski/giouring.svg)](https://pkg.go.dev/github.com/pawelgaczynski/giouring)
+
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 ## Used by
