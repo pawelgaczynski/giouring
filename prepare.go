@@ -99,8 +99,18 @@ func (entry *SubmissionQueueEntry) PrepareCloseDirect(fileIndex uint32) {
 	entry.setTargetFixedFile(fileIndex)
 }
 
+func (entry *SubmissionQueueEntry) PrepareConnectSockaddr(fd int, addr syscall.Sockaddr) error {
+	// FIXME
+	ptr, len, err := sockaddr(addr)
+	if err != nil {
+		return err
+	}
+	entry.prepareRW(OpConnect, fd, uintptr(ptr), 0, uint64(len))
+	return nil
+}
+
 // liburing: io_uring_prep_connect - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_connect.3.en.html
-func (entry *SubmissionQueueEntry) PrepareConnect(fd int, addr *syscall.Sockaddr, addrLen uint64) {
+func (entry *SubmissionQueueEntry) PrepareConnect(fd int, addr *syscall.RawSockaddrAny, addrLen uint64) {
 	entry.prepareRW(OpConnect, fd, uintptr(unsafe.Pointer(addr)), 0, addrLen)
 }
 
@@ -392,7 +402,7 @@ func (entry *SubmissionQueueEntry) PrepareSend(
 }
 
 // liburing: io_uring_prep_send_set_addr - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_send_set_addr.3.en.html
-func (entry *SubmissionQueueEntry) PrepareSendSetAddr(destAddr *syscall.Sockaddr, addrLen uint16) {
+func (entry *SubmissionQueueEntry) PrepareSendSetAddr(destAddr *syscall.RawSockaddrAny, addrLen uint16) {
 	entry.Off = uint64(uintptr(unsafe.Pointer(destAddr)))
 	// FIXME?
 	entry.SpliceFdIn = int32(addrLen)
@@ -400,7 +410,7 @@ func (entry *SubmissionQueueEntry) PrepareSendSetAddr(destAddr *syscall.Sockaddr
 
 // liburing: io_uring_prep_send_zc - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_send_zc.3.en.html
 func (entry *SubmissionQueueEntry) PrepareSendZC(sockFd int, buf []byte, flags int, zcFlags uint32) {
-	entry.prepareRW(OpSendZC, sockFd, uintptr(unsafe.Pointer(&buf)), uint32(len(buf)), 0)
+	entry.prepareRW(OpSendZC, sockFd, uintptr(unsafe.Pointer(&buf[0])), uint32(len(buf)), 0)
 	entry.OpcodeFlags = uint32(flags)
 	entry.IoPrio = uint16(zcFlags)
 }
@@ -430,7 +440,7 @@ func (entry *SubmissionQueueEntry) PrepareSendmsgZC(fd int, msg *syscall.Msghdr,
 
 // liburing: io_uring_prep_sendto - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_sendto.3.en.html
 func (entry *SubmissionQueueEntry) PrepareSendto(
-	sockFd int, buf []byte, flags int, addr *syscall.Sockaddr, addrLen uint32,
+	sockFd int, buf []byte, flags int, addr *syscall.RawSockaddrAny, addrLen uint32,
 ) {
 	entry.PrepareSend(sockFd, uintptr(unsafe.Pointer(&buf)), uint32(len(buf)), flags)
 	entry.PrepareSendSetAddr(addr, uint16(addrLen))

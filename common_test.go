@@ -26,6 +26,7 @@ package giouring
 import (
 	"fmt"
 	"sync/atomic"
+	"syscall"
 	"testing"
 
 	. "github.com/stretchr/testify/require"
@@ -37,13 +38,34 @@ func getTestPort() int {
 	return int(atomic.AddInt32(&port, 1))
 }
 
+func listenSocket(t *testing.T) (int, int) {
+	socketFd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, 0)
+	Nil(t, err)
+	// err = syscall.SetsockoptInt(socketFd, syscall.SOL_SOCKET, unix.SO_REUSEADDR, 1)
+	// Nil(t, err)
+	// err = syscall.SetsockoptInt(socketFd, syscall.SOL_SOCKET, unix.SO_REUSEPORT, 1)
+	// Nil(t, err)
+	testPort := getTestPort()
+
+	err = syscall.Bind(socketFd, &syscall.SockaddrInet4{
+		Port: testPort,
+	})
+	// Nil(t, err)
+	// err = syscall.SetNonblock(socketFd, false)
+	Nil(t, err)
+	err = syscall.Listen(socketFd, 128)
+	Nil(t, err)
+
+	return socketFd, testPort
+}
+
 type ringInitParams struct {
 	entries uint32
 	flags   uint32
 }
 
 type testScenario struct {
-	prepares []func(*testing.T, testContext, *SubmissionQueueEntry)
+	prepares []func(*testing.T, testContext, *SubmissionQueueEntry) bool
 	setup    func(testContext)
 	cleanup  func(testContext)
 	result   func(*testing.T, testContext, []*CompletionQueueEvent)
@@ -53,7 +75,7 @@ type testScenario struct {
 
 type testContext map[string]interface{}
 
-func testNewFramework(t *testing.T, params ringInitParams, scenario testScenario) {
+func testCase(t *testing.T, params ringInitParams, scenario testScenario) {
 	ring := NewRing()
 	NotNil(t, ring)
 
@@ -78,11 +100,15 @@ func testNewFramework(t *testing.T, params ringInitParams, scenario testScenario
 		}
 	}()
 
+	var numberOfWaitForCQEs uint32
+
 	for i := 0; i < len(scenario.prepares); i++ {
 		sqe := ring.GetSQE()
 		NotNil(t, sqe)
 
-		scenario.prepares[i](t, context, sqe)
+		if scenario.prepares[i](t, context, sqe) {
+			numberOfWaitForCQEs++
+		}
 
 		if scenario.debug {
 			// nolint: forbidigo
@@ -92,7 +118,7 @@ func testNewFramework(t *testing.T, params ringInitParams, scenario testScenario
 
 	numberOfSQEs := uint32(len(scenario.prepares))
 
-	submitted, err := ring.SubmitAndWait(numberOfSQEs)
+	submitted, err := ring.SubmitAndWait(numberOfWaitForCQEs)
 	NoError(t, err)
 	Equal(t, uint(numberOfSQEs), submitted)
 

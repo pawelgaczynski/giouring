@@ -24,8 +24,8 @@
 package giouring
 
 import (
-	// required for go:linkname
-	_ "unsafe"
+	"syscall"
+	"unsafe"
 )
 
 //go:linkname mmap syscall.mmap
@@ -33,3 +33,9 @@ func mmap(addr uintptr, length uintptr, prot int, flags int, fd int, offset int6
 
 //go:linkname munmap syscall.munmap
 func munmap(addr uintptr, length uintptr) (err error)
+
+//go:linkname sockaddr syscall.Sockaddr.sockaddr
+func sockaddr(addr syscall.Sockaddr) (unsafe.Pointer, uint32, error)
+
+//go:linkname anyToSockaddr syscall.anyToSockaddr
+func anyToSockaddr(rsa *syscall.RawSockaddrAny) (syscall.Sockaddr, error)

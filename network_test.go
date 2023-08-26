@@ -221,6 +221,7 @@ func (tester *networkTester) loop(
 			Equal(t, uint(1), cqeNr)
 
 		case cqe.UserData&sendFlag != 0:
+			fmt.Printf("cqe: %+v\n", cqe)
 			Equal(t, uint64(conn.fd), cqe.UserData & ^allFlagsMask)
 			Greater(t, cqe.Res, int32(0))
 
@@ -294,22 +295,7 @@ func testNetwork(t *testing.T, scenario networkTestScenario) {
 			ring.QueueExit()
 		}()
 
-		socketFd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, 0)
-		Nil(t, err)
-		err = syscall.SetsockoptInt(socketFd, syscall.SOL_SOCKET, unix.SO_REUSEADDR, 1)
-		Nil(t, err)
-		err = syscall.SetsockoptInt(socketFd, syscall.SOL_SOCKET, unix.SO_REUSEPORT, 1)
-		Nil(t, err)
-		testPort := getTestPort()
-
-		err = syscall.Bind(socketFd, &syscall.SockaddrInet4{
-			Port: testPort,
-		})
-		Nil(t, err)
-		err = syscall.SetNonblock(socketFd, false)
-		Nil(t, err)
-		err = syscall.Listen(socketFd, 128)
-		Nil(t, err)
+		socketFd, testPort := listenSocket(t)
 
 		defer func() {
 			closeErr := syscall.Close(socketFd)
@@ -390,6 +376,27 @@ func TestAcceptSendRecvTCP(t *testing.T) {
 		prepareSend: func(t *testing.T, ctx testContext, conn *tcpConn, buffer []byte, entry *SubmissionQueueEntry) {
 			entry.PrepareSend(
 				conn.fd, uintptr(unsafe.Pointer(&buffer[0])), uint32(len(buffer)), 0)
+		},
+		prepareClose: func(t *testing.T, ctx testContext, conn *tcpConn, entry *SubmissionQueueEntry) {
+			entry.PrepareClose(conn.fd)
+		},
+
+		recvDataProvider: func(ctx testContext, conn *tcpConn, cqe *CompletionQueueEvent) []byte {
+			return conn.buffer[:18]
+		},
+	})
+}
+
+func TestAcceptSendZCRecvTCP(t *testing.T) {
+	testNetwork(t, networkTestScenario{
+		prepareAccept: prepareSingleAccept,
+		prepareRecv: func(t *testing.T, ctx testContext, conn *tcpConn, entry *SubmissionQueueEntry) {
+			entry.PrepareRecv(
+				conn.fd, uintptr(unsafe.Pointer(&conn.buffer[0])), uint32(len(conn.buffer)), 0)
+		},
+		prepareSend: func(t *testing.T, ctx testContext, conn *tcpConn, buffer []byte, entry *SubmissionQueueEntry) {
+			entry.PrepareSendZC(
+				conn.fd, buffer, 0, 0)
 		},
 		prepareClose: func(t *testing.T, ctx testContext, conn *tcpConn, entry *SubmissionQueueEntry) {
 			entry.PrepareClose(conn.fd)

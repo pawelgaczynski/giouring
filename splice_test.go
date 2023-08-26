@@ -32,7 +32,7 @@ import (
 )
 
 func TestSplice(t *testing.T) {
-	testNewFramework(t, ringInitParams{}, testScenario{
+	testCase(t, ringInitParams{}, testScenario{
 		setup: func(ctx testContext) {
 			file1, err := os.CreateTemp("", "splice_1")
 			NoError(t, err)
@@ -50,22 +50,24 @@ func TestSplice(t *testing.T) {
 			ctx["pipeW"] = pipeW
 		},
 
-		prepares: []func(*testing.T, testContext, *SubmissionQueueEntry){
-			func(t *testing.T, ctx testContext, sqe *SubmissionQueueEntry) {
+		prepares: []func(*testing.T, testContext, *SubmissionQueueEntry) bool{
+			func(t *testing.T, ctx testContext, sqe *SubmissionQueueEntry) bool {
 				file1, ok := ctx["file1"].(*os.File)
 				True(t, ok)
 				pipeW, ok := ctx["pipeW"].(*os.File)
 				True(t, ok)
 				sqe.PrepareSplice(int(file1.Fd()), -1, int(pipeW.Fd()), -1, 4, 0)
 				sqe.UserData = 1
+				return true
 			},
-			func(t *testing.T, ctx testContext, sqe *SubmissionQueueEntry) {
+			func(t *testing.T, ctx testContext, sqe *SubmissionQueueEntry) bool {
 				file2, ok := ctx["file2"].(*os.File)
 				True(t, ok)
 				pipeR, ok := ctx["pipeR"].(*os.File)
 				True(t, ok)
 				sqe.PrepareSplice(int(pipeR.Fd()), -1, int(file2.Fd()), -1, 4, 0)
 				sqe.UserData = 2
+				return true
 			},
 		},
 
@@ -101,7 +103,7 @@ func TestSplice(t *testing.T) {
 }
 
 func TestTee(t *testing.T) {
-	testNewFramework(t, ringInitParams{}, testScenario{
+	testCase(t, ringInitParams{}, testScenario{
 		setup: func(ctx testContext) {
 			pipe1R, pipe1W, err := os.Pipe()
 			NoError(t, err)
@@ -118,14 +120,15 @@ func TestTee(t *testing.T) {
 			Equal(t, 4, n)
 		},
 
-		prepares: []func(*testing.T, testContext, *SubmissionQueueEntry){
-			func(t *testing.T, ctx testContext, sqe *SubmissionQueueEntry) {
+		prepares: []func(*testing.T, testContext, *SubmissionQueueEntry) bool{
+			func(t *testing.T, ctx testContext, sqe *SubmissionQueueEntry) bool {
 				pipe1R, ok := ctx["pipe1R"].(*os.File)
 				True(t, ok)
 				pipe2W, ok := ctx["pipe2W"].(*os.File)
 				True(t, ok)
 				sqe.PrepareTee(int(pipe1R.Fd()), int(pipe2W.Fd()), 4, 0)
 				sqe.UserData = 1
+				return true
 			},
 		},
 
