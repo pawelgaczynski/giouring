@@ -100,8 +100,13 @@ func (entry *SubmissionQueueEntry) PrepareCloseDirect(fileIndex uint32) {
 }
 
 // liburing: io_uring_prep_connect - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_connect.3.en.html
-func (entry *SubmissionQueueEntry) PrepareConnect(fd int, addr *syscall.Sockaddr, addrLen uint64) {
-	entry.prepareRW(OpConnect, fd, uintptr(unsafe.Pointer(addr)), 0, addrLen)
+func (entry *SubmissionQueueEntry) PrepareConnect(fd int, sa syscall.Sockaddr) error {
+	addrPtr, addrLen, errno := sockaddr(sa)
+	if errno != 0 {
+		return errno
+	}
+	entry.prepareRW(OpConnect, fd, uintptr(addrPtr), 0, uint64(addrLen))
+	return nil
 }
 
 // io_uring_prep_fadvise - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_fadvise.3.en.html
@@ -594,4 +599,77 @@ func (entry *SubmissionQueueEntry) PrepareCmdSock(
 	// io_uring_prep_rw(IORING_OP_URING_CMD, sqe, fd, nil, 0, 0)
 	entry.prepareRW(OpUringCmd, fd, 0, 0, 0)
 	entry.Off = uint64(cmdOp << bit32Offset)
+}
+
+// convert syscall.Sockaddr interface to raw pointers
+// ref: https://groups.google.com/g/golang-nuts/c/B-meiFfkmH0/m/PyFC84kPaFkJ
+func sockaddr(addr syscall.Sockaddr) (unsafe.Pointer, uint32, syscall.Errno) {
+	switch sa := addr.(type) {
+	case *syscall.SockaddrInet4:
+		return sockaddr4(sa)
+	case *syscall.SockaddrInet6:
+		return sockaddr6(sa)
+	case *syscall.SockaddrUnix:
+		return sockaddrUnix(sa)
+	default:
+		panic("unimplemented")
+	}
+}
+
+// ref: https://github.com/golang/go/blob/a40404da748f0a9c7da19b077634fd7334ca5802/src/syscall/syscall_linux.go#L514
+func sockaddr4(sa *syscall.SockaddrInet4) (unsafe.Pointer, uint32, syscall.Errno) {
+	if sa.Port < 0 || sa.Port > 0xFFFF {
+		return nil, 0, syscall.EINVAL
+	}
+	var raw syscall.RawSockaddrInet4
+	raw.Family = syscall.AF_INET
+	p := (*[2]byte)(unsafe.Pointer(&raw.Port))
+	p[0] = byte(sa.Port >> 8)
+	p[1] = byte(sa.Port)
+	raw.Addr = sa.Addr
+	return unsafe.Pointer(&raw), syscall.SizeofSockaddrInet4, 0
+}
+
+// ref: https://github.com/golang/go/blob/a40404da748f0a9c7da19b077634fd7334ca5802/src/syscall/syscall_linux.go#L526
+func sockaddr6(sa *syscall.SockaddrInet6) (unsafe.Pointer, uint32, syscall.Errno) {
+	if sa.Port < 0 || sa.Port > 0xFFFF {
+		return nil, 0, syscall.EINVAL
+	}
+	var raw syscall.RawSockaddrInet6
+	raw.Family = syscall.AF_INET6
+	p := (*[2]byte)(unsafe.Pointer(&raw.Port))
+	p[0] = byte(sa.Port >> 8)
+	p[1] = byte(sa.Port)
+	raw.Scope_id = sa.ZoneId
+	raw.Addr = sa.Addr
+	return unsafe.Pointer(&raw), syscall.SizeofSockaddrInet6, 0
+}
+
+// ref: https://github.com/golang/go/blob/a40404da748f0a9c7da19b077634fd7334ca5802/src/syscall/syscall_linux.go#L539
+func sockaddrUnix(sa *syscall.SockaddrUnix) (unsafe.Pointer, uint32, syscall.Errno) {
+	name := sa.Name
+	n := len(name)
+	var raw syscall.RawSockaddrUnix
+	if n > len(raw.Path) {
+		return nil, 0, syscall.EINVAL
+	}
+	if n == len(raw.Path) && name[0] != '@' {
+		return nil, 0, syscall.EINVAL
+	}
+	raw.Family = syscall.AF_UNIX
+	for i := 0; i < n; i++ {
+		raw.Path[i] = int8(name[i])
+	}
+	// length is family (uint16), name, NUL.
+	sl := uint32(2)
+	if n > 0 {
+		sl += uint32(n) + 1
+	}
+	if raw.Path[0] == '@' {
+		raw.Path[0] = 0
+		// Don't count trailing NUL for abstract address.
+		sl--
+	}
+
+	return unsafe.Pointer(&raw), sl, 0
 }

@@ -42,9 +42,10 @@ const (
 	recvFlag
 	sendFlag
 	closeFlag
+	connectFlag
 )
 
-const allFlagsMask = acceptFlag | recvFlag | sendFlag | closeFlag
+const allFlagsMask = acceptFlag | recvFlag | sendFlag | closeFlag | connectFlag
 
 const (
 	acceptState = iota
