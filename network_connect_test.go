@@ -13,6 +13,9 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+//go:linkname sockaddr syscall.Sockaddr.sockaddr
+func sockaddr(addr syscall.Sockaddr) (unsafe.Pointer, uint32, error)
+
 func TestNetworkConnectWrite(t *testing.T) {
 	listen, err := net.Listen("tcp", "127.0.0.1:0")
 	NoError(t, err)
@@ -35,10 +38,10 @@ func TestNetworkConnectWrite(t *testing.T) {
 		// prepare connect
 		sqe := ring.GetSQE()
 		NotNil(t, sqe)
-
 		sa := syscall.SockaddrInet4{Port: port}
-		err = sqe.PrepareConnect(fd, &sa)
+		addr, addrLen, err := sockaddr(&sa)
 		NoError(t, err)
+		sqe.PrepareConnect(fd, uintptr(addr), uint64(addrLen))
 		sqe.UserData = connectFlag
 
 		// submit, wait for connect to complete
