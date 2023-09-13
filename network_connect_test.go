@@ -32,11 +32,16 @@ func TestNetworkConnectWrite(t *testing.T) {
 		defer ring.QueueExit()
 
 		// create a TCP socket
-		fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, 0)
-		NoError(t, err)
+		sqe := ring.GetSQE()
+		NotNil(t, sqe)
+		sqe.PrepareSocket(syscall.AF_INET, syscall.SOCK_STREAM, 0, 0)
+		sqe.UserData = connectFlag
+		cqe := testSubmitWaitCQE(t, ring, connectFlag)
+		True(t, cqe.Res > 0)
+		fd := int(cqe.Res)
 
 		// prepare connect
-		sqe := ring.GetSQE()
+		sqe = ring.GetSQE()
 		NotNil(t, sqe)
 		sa := syscall.SockaddrInet4{Port: port}
 		addr, addrLen, err := sockaddr(&sa)
@@ -45,7 +50,7 @@ func TestNetworkConnectWrite(t *testing.T) {
 		sqe.UserData = connectFlag
 
 		// submit, wait for connect to complete
-		cqe := testSubmitWaitCQE(t, ring, connectFlag)
+		cqe = testSubmitWaitCQE(t, ring, connectFlag)
 		True(t, cqe.Res == 0)
 
 		// prepare send
