@@ -100,8 +100,8 @@ func (entry *SubmissionQueueEntry) PrepareCloseDirect(fileIndex uint32) {
 }
 
 // liburing: io_uring_prep_connect - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_connect.3.en.html
-func (entry *SubmissionQueueEntry) PrepareConnect(fd int, addr *syscall.Sockaddr, addrLen uint64) {
-	entry.prepareRW(OpConnect, fd, uintptr(unsafe.Pointer(addr)), 0, addrLen)
+func (entry *SubmissionQueueEntry) PrepareConnect(fd int, addr uintptr, addrLen uint64) {
+	entry.prepareRW(OpConnect, fd, addr, 0, addrLen)
 }
 
 // io_uring_prep_fadvise - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_fadvise.3.en.html
