@@ -24,7 +24,6 @@
 package giouring
 
 import (
-	"fmt"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -41,17 +40,11 @@ func getTestPort() int {
 func listenSocket(t *testing.T) (int, int) {
 	socketFd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, 0)
 	Nil(t, err)
-	// err = syscall.SetsockoptInt(socketFd, syscall.SOL_SOCKET, unix.SO_REUSEADDR, 1)
-	// Nil(t, err)
-	// err = syscall.SetsockoptInt(socketFd, syscall.SOL_SOCKET, unix.SO_REUSEPORT, 1)
-	// Nil(t, err)
 	testPort := getTestPort()
 
 	err = syscall.Bind(socketFd, &syscall.SockaddrInet4{
 		Port: testPort,
 	})
-	// Nil(t, err)
-	// err = syscall.SetNonblock(socketFd, false)
 	Nil(t, err)
 	err = syscall.Listen(socketFd, 128)
 	Nil(t, err)
@@ -59,86 +52,105 @@ func listenSocket(t *testing.T) (int, int) {
 	return socketFd, testPort
 }
 
-type ringInitParams struct {
-	entries uint32
-	flags   uint32
-}
+type prepare func(*testing.T, testContext, *SubmissionQueueEntry)
+
+type action func(*testing.T, testContext) int
+
+type setup func(*testing.T, *Ring, testContext)
+
+type cleanup func(testContext)
+
+type result func(*testing.T, testContext, []*CompletionQueueEvent)
+
+type assert func(*testing.T, testContext)
 
 type testScenario struct {
-	prepares []func(*testing.T, testContext, *SubmissionQueueEntry) bool
-	setup    func(testContext)
-	cleanup  func(testContext)
-	result   func(*testing.T, testContext, []*CompletionQueueEvent)
-	assert   func(*testing.T, testContext)
-	debug    bool
+	prepares []prepare
+	action   action
+	setup    setup
+	cleanup  cleanup
+	result   result
+	assert   assert
+	loop     bool
 }
 
 type testContext map[string]interface{}
 
-func testCase(t *testing.T, params ringInitParams, scenario testScenario) {
+func testCase(t *testing.T, scenario testScenario) {
 	ring := NewRing()
 	NotNil(t, ring)
 
 	var entries uint32 = 16
-	if params.entries != 0 {
-		entries = params.entries
-	}
-
-	err := ring.QueueInit(entries, params.flags)
+	err := ring.QueueInit(entries, 0)
 	NoError(t, err)
 
 	defer ring.QueueExit()
 
 	context := make(map[string]interface{})
 	if scenario.setup != nil {
-		scenario.setup(context)
+		scenario.setup(t, ring, context)
 	}
 
-	defer func() {
+	t.Cleanup(func() {
 		if scenario.cleanup != nil {
 			scenario.cleanup(context)
 		}
-	}()
+	})
 
-	var numberOfWaitForCQEs uint32
+	var numberOfLoops int
+	var numberOfSQEInLoop int
 
-	for i := 0; i < len(scenario.prepares); i++ {
-		sqe := ring.GetSQE()
-		NotNil(t, sqe)
-
-		if scenario.prepares[i](t, context, sqe) {
-			numberOfWaitForCQEs++
-		}
-
-		if scenario.debug {
-			// nolint: forbidigo
-			fmt.Printf(">>> %s # Prepared SQE[%d] = %+v\n", t.Name(), i, sqe)
-		}
+	if scenario.loop {
+		numberOfLoops = len(scenario.prepares)
+		numberOfSQEInLoop = 1
+	} else {
+		numberOfLoops = 1
+		numberOfSQEInLoop = len(scenario.prepares)
 	}
 
-	numberOfSQEs := uint32(len(scenario.prepares))
+	prepareIdx := 0
 
-	submitted, err := ring.SubmitAndWait(numberOfWaitForCQEs)
-	NoError(t, err)
-	Equal(t, uint(numberOfSQEs), submitted)
+	for i := 0; i < numberOfLoops; i++ {
+		for j := 0; j < numberOfSQEInLoop; j++ {
+			sqe := ring.GetSQE()
+			NotNil(t, sqe)
 
-	cqes := make([]*CompletionQueueEvent, numberOfSQEs)
+			scenario.prepares[prepareIdx](t, context, sqe)
 
-	numberOfCQEs := ring.PeekBatchCQE(cqes)
-	Equal(t, numberOfSQEs, numberOfCQEs)
+			t.Logf(">>> %s # Prepared SQE[%d] = %+v\n", t.Name(), prepareIdx, sqe)
 
-	for i, cqe := range cqes {
-		if scenario.debug {
-			// nolint: forbidigo
-			fmt.Printf("<<< %s # Received CQE[%d] = %+v\n", t.Name(), i, cqe)
+			prepareIdx++
 		}
-	}
 
-	scenario.result(t, context, cqes)
+		numberOfCQEWait := numberOfSQEInLoop
+		submitted, submitErr := ring.Submit()
+		NoError(t, submitErr)
+		Equal(t, uint(numberOfSQEInLoop), submitted)
+
+		if scenario.action != nil {
+			if cqesExpected := scenario.action(t, context); cqesExpected > 0 {
+				numberOfCQEWait = cqesExpected
+			}
+		}
+
+		_, err = ring.WaitCQENr(uint32(numberOfCQEWait))
+		NoError(t, err)
+
+		cqes := make([]*CompletionQueueEvent, numberOfCQEWait)
+
+		numberOfCQEs := ring.PeekBatchCQE(cqes)
+		Equal(t, uint32(numberOfCQEWait), numberOfCQEs)
+
+		for idx, cqe := range cqes {
+			t.Logf("<<< %s # Received CQE[%d] = %+v\n", t.Name(), idx, cqe)
+		}
+
+		scenario.result(t, context, cqes)
+
+		ring.CQAdvance(uint32(submitted))
+	}
 
 	if scenario.assert != nil {
 		scenario.assert(t, context)
 	}
-
-	ring.CQAdvance(uint32(submitted))
 }

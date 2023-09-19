@@ -70,16 +70,17 @@ type networkTester struct {
 	clientAddr *unix.RawSockaddrAny
 	clientLen  *uint32
 
-	clientAddrPointer uintptr
+	clientAddrPointer unsafe.Pointer
 	clientLenPointer  uint64
 
-	accpepted uint
+	accepted          uint
+	recvDataAssertIdx int
 }
 
 var prepareSingleAccept = func(t *testing.T, context testContext, entry *SubmissionQueueEntry) {
 	socketFd, ok := context["socketFd"].(int)
 	True(t, ok)
-	clientAddrPointer, ok := context["clientAddrPointer"].(uintptr)
+	clientAddrPointer, ok := context["clientAddrPointer"].(unsafe.Pointer)
 	True(t, ok)
 	clientLenPointer, ok := context["clientLenPointer"].(uint64)
 	True(t, ok)
@@ -90,7 +91,7 @@ func newNetworkTester() *networkTester {
 	clientLen := new(uint32)
 	clientAddr := &unix.RawSockaddrAny{}
 	*clientLen = unix.SizeofSockaddrAny
-	clientAddrPointer := uintptr(unsafe.Pointer(clientAddr))
+	clientAddrPointer := unsafe.Pointer(clientAddr)
 	clientLenPointer := uint64(uintptr(unsafe.Pointer(clientLen)))
 
 	return &networkTester{
@@ -107,7 +108,7 @@ func (tester *networkTester) getConnection(fd int) *tcpConn {
 		return val
 	}
 
-	buffer := make([]byte, 1024)
+	buffer := make([]byte, bufferSize)
 	iovecs := make([]syscall.Iovec, 1)
 	iovecs[0] = syscall.Iovec{
 		Base: &buffer[0],
@@ -156,7 +157,7 @@ func (tester *networkTester) loop(
 	ring.CQESeen(cqe)
 
 	if cqe.UserData&acceptFlag != 0 {
-		tester.accpepted++
+		tester.accepted++
 
 		Equal(t, uint64(socketFd), cqe.UserData^acceptFlag)
 		GreaterOrEqual(t, cqe.Res, int32(0))
@@ -170,7 +171,7 @@ func (tester *networkTester) loop(
 		entry.UserData = recvFlag | uint64(conn.fd)
 		conn.state = recvState
 
-		if scenario.repeatAccept && tester.accpepted < scenario.clientsNumber {
+		if scenario.repeatAccept && tester.accepted < scenario.clientsNumber {
 			var cqeNr uint
 			cqeNr, err = ring.Submit()
 			Nil(t, err)
@@ -221,9 +222,13 @@ func (tester *networkTester) loop(
 			Equal(t, uint(1), cqeNr)
 
 		case cqe.UserData&sendFlag != 0:
-			fmt.Printf("cqe: %+v\n", cqe)
-			Equal(t, uint64(conn.fd), cqe.UserData & ^allFlagsMask)
-			Greater(t, cqe.Res, int32(0))
+			if len(scenario.sendDataAssert) > 0 {
+				scenario.sendDataAssert[tester.recvDataAssertIdx](t, ctx, conn, cqe)
+				tester.recvDataAssertIdx++
+			} else {
+				Equal(t, uint64(conn.fd), cqe.UserData & ^allFlagsMask)
+				Greater(t, cqe.Res, int32(0))
+			}
 
 			if conn.receivedCount == expectedRWLoops {
 				entry := ring.GetSQE()
@@ -265,6 +270,8 @@ type networkTestScenario struct {
 
 	recvDataProvider   func(testContext, *tcpConn, *CompletionQueueEvent) []byte
 	recvLengthProvider func() int32
+
+	sendDataAssert []func(*testing.T, testContext, *tcpConn, *CompletionQueueEvent)
 }
 
 func testNetwork(t *testing.T, scenario networkTestScenario) {
@@ -366,19 +373,76 @@ func testNetwork(t *testing.T, scenario networkTestScenario) {
 	wg.Wait()
 }
 
+var zcSendDataAsserts = func(sendSize int) []func(*testing.T, testContext, *tcpConn, *CompletionQueueEvent) {
+	return []func(*testing.T, testContext, *tcpConn, *CompletionQueueEvent){
+		func(t *testing.T, ctx testContext, conn *tcpConn, cqe *CompletionQueueEvent) {
+			Equal(t, uint64(conn.fd), cqe.UserData & ^allFlagsMask)
+			Equal(t, cqe.Flags, CQEFMore)
+			Equal(t, cqe.Res, int32(sendSize))
+		},
+		func(t *testing.T, ctx testContext, conn *tcpConn, cqe *CompletionQueueEvent) {
+			Equal(t, uint64(conn.fd), cqe.UserData & ^allFlagsMask)
+			Equal(t, cqe.Flags, CQEFNotif)
+			Equal(t, cqe.Res, int32(0))
+		},
+	}
+}
+
+var setupBuffers = func(t *testing.T, ctx testContext, ring *Ring) {
+	buffers := make([][]byte, 16)
+	iovecs := make([]syscall.Iovec, len(buffers))
+	for i := 0; i < len(buffers); i++ {
+		buffer := make([]byte, bufferSize)
+		iovec := syscall.Iovec{
+			Base: &buffer[0],
+			Len:  uint64(len(buffer)),
+		}
+
+		buffers[i] = buffer
+		iovecs[i] = iovec
+	}
+
+	ret, err := ring.RegisterBuffers(iovecs)
+	Zero(t, ret)
+	NoError(t, err)
+
+	ctx["buffers"] = buffers
+}
+
 func TestAcceptSendRecvTCP(t *testing.T) {
 	testNetwork(t, networkTestScenario{
 		prepareAccept: prepareSingleAccept,
 		prepareRecv: func(t *testing.T, ctx testContext, conn *tcpConn, entry *SubmissionQueueEntry) {
 			entry.PrepareRecv(
-				conn.fd, uintptr(unsafe.Pointer(&conn.buffer[0])), uint32(len(conn.buffer)), 0)
+				conn.fd, conn.buffer, uint32(len(conn.buffer)), 0)
 		},
 		prepareSend: func(t *testing.T, ctx testContext, conn *tcpConn, buffer []byte, entry *SubmissionQueueEntry) {
 			entry.PrepareSend(
-				conn.fd, uintptr(unsafe.Pointer(&buffer[0])), uint32(len(buffer)), 0)
+				conn.fd, buffer, uint32(len(buffer)), 0)
 		},
 		prepareClose: func(t *testing.T, ctx testContext, conn *tcpConn, entry *SubmissionQueueEntry) {
 			entry.PrepareClose(conn.fd)
+		},
+
+		recvDataProvider: func(ctx testContext, conn *tcpConn, cqe *CompletionQueueEvent) []byte {
+			return conn.buffer[:18]
+		},
+	})
+}
+
+func TestAcceptSendRecvShutdownTCP(t *testing.T) {
+	testNetwork(t, networkTestScenario{
+		prepareAccept: prepareSingleAccept,
+		prepareRecv: func(t *testing.T, ctx testContext, conn *tcpConn, entry *SubmissionQueueEntry) {
+			entry.PrepareRecv(
+				conn.fd, conn.buffer, uint32(len(conn.buffer)), 0)
+		},
+		prepareSend: func(t *testing.T, ctx testContext, conn *tcpConn, buffer []byte, entry *SubmissionQueueEntry) {
+			entry.PrepareSend(
+				conn.fd, buffer, uint32(len(buffer)), 0)
+		},
+		prepareClose: func(t *testing.T, ctx testContext, conn *tcpConn, entry *SubmissionQueueEntry) {
+			entry.PrepareShutdown(conn.fd, unix.SHUT_RDWR)
 		},
 
 		recvDataProvider: func(ctx testContext, conn *tcpConn, cqe *CompletionQueueEvent) []byte {
@@ -392,7 +456,7 @@ func TestAcceptSendZCRecvTCP(t *testing.T) {
 		prepareAccept: prepareSingleAccept,
 		prepareRecv: func(t *testing.T, ctx testContext, conn *tcpConn, entry *SubmissionQueueEntry) {
 			entry.PrepareRecv(
-				conn.fd, uintptr(unsafe.Pointer(&conn.buffer[0])), uint32(len(conn.buffer)), 0)
+				conn.fd, conn.buffer, uint32(len(conn.buffer)), 0)
 		},
 		prepareSend: func(t *testing.T, ctx testContext, conn *tcpConn, buffer []byte, entry *SubmissionQueueEntry) {
 			entry.PrepareSendZC(
@@ -405,6 +469,36 @@ func TestAcceptSendZCRecvTCP(t *testing.T) {
 		recvDataProvider: func(ctx testContext, conn *tcpConn, cqe *CompletionQueueEvent) []byte {
 			return conn.buffer[:18]
 		},
+
+		sendDataAssert: zcSendDataAsserts(22),
+	})
+}
+
+func TestAcceptSendZCFixedRecvTCP(t *testing.T) {
+	testNetwork(t, networkTestScenario{
+		setup:         setupBuffers,
+		prepareAccept: prepareSingleAccept,
+		prepareRecv: func(t *testing.T, ctx testContext, conn *tcpConn, entry *SubmissionQueueEntry) {
+			entry.PrepareRecv(
+				conn.fd, conn.buffer, uint32(len(conn.buffer)), 0)
+		},
+		prepareSend: func(t *testing.T, ctx testContext, conn *tcpConn, buffer []byte, entry *SubmissionQueueEntry) {
+			buffers, ok := ctx["buffers"].([][]byte)
+			registeredBuffer := buffers[0]
+			copy(registeredBuffer, buffer)
+			True(t, ok)
+			entry.PrepareSendZCFixed(
+				conn.fd, registeredBuffer[:22], 0, 0, 0)
+		},
+		prepareClose: func(t *testing.T, ctx testContext, conn *tcpConn, entry *SubmissionQueueEntry) {
+			entry.PrepareClose(conn.fd)
+		},
+
+		recvDataProvider: func(ctx testContext, conn *tcpConn, cqe *CompletionQueueEvent) []byte {
+			return conn.buffer[:18]
+		},
+
+		sendDataAssert: zcSendDataAsserts(22),
 	})
 }
 
@@ -412,11 +506,11 @@ func TestAcceptReadWriteTCP(t *testing.T) {
 	testNetwork(t, networkTestScenario{
 		prepareAccept: prepareSingleAccept,
 		prepareRecv: func(t *testing.T, context testContext, conn *tcpConn, entry *SubmissionQueueEntry) {
-			entry.PrepareRead(conn.fd, uintptr(unsafe.Pointer(&conn.buffer[0])), uint32(len(conn.buffer)), 0)
+			entry.PrepareRead(conn.fd, conn.buffer, uint32(len(conn.buffer)), 0)
 		},
 		prepareSend: func(t *testing.T, context testContext, conn *tcpConn, buffer []byte, entry *SubmissionQueueEntry) {
 			entry.PrepareWrite(
-				conn.fd, uintptr(unsafe.Pointer(&buffer[0])), uint32(len(buffer)), 0)
+				conn.fd, buffer, uint32(len(buffer)), 0)
 		},
 		prepareClose: func(t *testing.T, tc testContext, conn *tcpConn, entry *SubmissionQueueEntry) {
 			entry.PrepareClose(conn.fd)
@@ -428,15 +522,100 @@ func TestAcceptReadWriteTCP(t *testing.T) {
 	})
 }
 
+func TestAcceptDirectReadWriteTCP(t *testing.T) {
+	testNetwork(t, networkTestScenario{
+		setup: func(t *testing.T, ctx testContext, ring *Ring) {
+			files := []int{-1}
+			ret, err := ring.RegisterFiles(files)
+			NoError(t, err)
+			Equal(t, uint(0), ret)
+			ctx["files"] = files
+		},
+		prepareAccept: func(t *testing.T, context testContext, entry *SubmissionQueueEntry) {
+			socketFd, ok := context["socketFd"].(int)
+			True(t, ok)
+			entry.PrepareAcceptDirect(socketFd, nil, 0, 0, 0)
+		},
+		prepareRecv: func(t *testing.T, context testContext, conn *tcpConn, entry *SubmissionQueueEntry) {
+			entry.PrepareRead(conn.fd, conn.buffer, uint32(len(conn.buffer)), 0)
+			entry.Flags |= SqeFixedFile
+		},
+		prepareSend: func(t *testing.T, context testContext, conn *tcpConn, buffer []byte, entry *SubmissionQueueEntry) {
+			entry.PrepareWrite(
+				conn.fd, buffer, uint32(len(buffer)), 0)
+			entry.Flags |= SqeFixedFile
+		},
+		prepareClose: func(t *testing.T, tc testContext, conn *tcpConn, entry *SubmissionQueueEntry) {
+			entry.PrepareCloseDirect(uint32(conn.fd))
+		},
+
+		recvDataProvider: func(ctx testContext, conn *tcpConn, cqe *CompletionQueueEvent) []byte {
+			return conn.buffer[:18]
+		},
+	})
+}
+
+func TestAcceptReadWriteFixedTCP(t *testing.T) {
+	testNetwork(t, networkTestScenario{
+		setup:         setupBuffers,
+		prepareAccept: prepareSingleAccept,
+		prepareRecv: func(t *testing.T, ctx testContext, conn *tcpConn, entry *SubmissionQueueEntry) {
+			buffers, ok := ctx["buffers"].([][]byte)
+			True(t, ok)
+			registeredBuffer := buffers[0]
+			entry.PrepareReadFixed(conn.fd, registeredBuffer, uint32(len(registeredBuffer)), 0, 0)
+		},
+		prepareSend: func(t *testing.T, ctx testContext, conn *tcpConn, buffer []byte, entry *SubmissionQueueEntry) {
+			buffers, ok := ctx["buffers"].([][]byte)
+			True(t, ok)
+			registeredBuffer := buffers[0]
+			copy(registeredBuffer, []byte("responsedata0123456789"))
+			entry.PrepareWriteFixed(
+				conn.fd, registeredBuffer, uint32(len(registeredBuffer)), 0, 0)
+		},
+		prepareClose: func(t *testing.T, tc testContext, conn *tcpConn, entry *SubmissionQueueEntry) {
+			entry.PrepareClose(conn.fd)
+		},
+
+		recvDataProvider: func(ctx testContext, conn *tcpConn, cqe *CompletionQueueEvent) []byte {
+			buffers, ok := ctx["buffers"].([][]byte)
+			True(t, ok)
+			registeredBuffer := buffers[0]
+
+			return registeredBuffer[:cqe.Res]
+		},
+	})
+}
+
 func TestAcceptReadvWritevTCP(t *testing.T) {
 	testNetwork(t, networkTestScenario{
 		prepareAccept: prepareSingleAccept,
 		prepareRecv: func(t *testing.T, context testContext, conn *tcpConn, entry *SubmissionQueueEntry) {
-			entry.PrepareReadv(conn.fd, uintptr(unsafe.Pointer(&conn.iovecs[0])), uint32(len(conn.iovecs)), 0)
+			entry.PrepareReadv(conn.fd, unsafe.Pointer(&conn.iovecs[0]), uint32(len(conn.iovecs)), 0)
 		},
 		prepareSend: func(t *testing.T, context testContext, conn *tcpConn, buffer []byte, entry *SubmissionQueueEntry) {
 			entry.PrepareWritev(
-				conn.fd, uintptr(unsafe.Pointer(&conn.iovecs[0])), uint32(len(conn.iovecs)), 0)
+				conn.fd, unsafe.Pointer(&conn.iovecs[0]), uint32(len(conn.iovecs)), 0)
+		},
+		prepareClose: func(t *testing.T, tc testContext, conn *tcpConn, entry *SubmissionQueueEntry) {
+			entry.PrepareClose(conn.fd)
+		},
+
+		recvDataProvider: func(ctx testContext, conn *tcpConn, cqe *CompletionQueueEvent) []byte {
+			return conn.buffer[:18]
+		},
+	})
+}
+
+func TestAcceptReadv2Writev2TCP(t *testing.T) {
+	testNetwork(t, networkTestScenario{
+		prepareAccept: prepareSingleAccept,
+		prepareRecv: func(t *testing.T, context testContext, conn *tcpConn, entry *SubmissionQueueEntry) {
+			entry.PrepareReadv2(conn.fd, unsafe.Pointer(&conn.iovecs[0]), uint32(len(conn.iovecs)), 0, 0)
+		},
+		prepareSend: func(t *testing.T, context testContext, conn *tcpConn, buffer []byte, entry *SubmissionQueueEntry) {
+			entry.PrepareWritev2(
+				conn.fd, unsafe.Pointer(&conn.iovecs[0]), uint32(len(conn.iovecs)), 0, 0)
 		},
 		prepareClose: func(t *testing.T, tc testContext, conn *tcpConn, entry *SubmissionQueueEntry) {
 			entry.PrepareClose(conn.fd)
@@ -457,12 +636,12 @@ func TestMultiAcceptMultiRecvTCP(t *testing.T) {
 			buffers := make([][]byte, 16)
 			ts := syscall.NsecToTimespec((time.Millisecond).Nanoseconds())
 			for i := 0; i < len(buffers); i++ {
-				buffers[i] = make([]byte, 1024)
+				buffers[i] = make([]byte, bufferSize)
 
 				sqe := ring.GetSQE()
 				NotNil(t, sqe)
 
-				sqe.PrepareProvideBuffers(uintptr(unsafe.Pointer(&buffers[i][0])), len(buffers[i]), 1, 7, i)
+				sqe.PrepareProvideBuffers(buffers[i], len(buffers[i]), 1, 7, i)
 				sqe.UserData = 777
 
 				cqe, err := ring.SubmitAndWaitTimeout(1, &ts, nil)
@@ -476,7 +655,7 @@ func TestMultiAcceptMultiRecvTCP(t *testing.T) {
 		prepareAccept: func(t *testing.T, context testContext, entry *SubmissionQueueEntry) {
 			socketFd, ok := context["socketFd"].(int)
 			True(t, ok)
-			clientAddrPointer, ok := context["clientAddrPointer"].(uintptr)
+			clientAddrPointer, ok := context["clientAddrPointer"].(unsafe.Pointer)
 			True(t, ok)
 			clientLenPointer, ok := context["clientLenPointer"].(uint64)
 			True(t, ok)
@@ -484,13 +663,13 @@ func TestMultiAcceptMultiRecvTCP(t *testing.T) {
 			entry.PrepareMultishotAccept(socketFd, clientAddrPointer, clientLenPointer, 0)
 		},
 		prepareRecv: func(t *testing.T, context testContext, conn *tcpConn, entry *SubmissionQueueEntry) {
-			entry.PrepareRecvMultishot(conn.fd, 0, 0, 0)
+			entry.PrepareRecvMultishot(conn.fd, nil, 0, 0)
 			entry.Flags |= SqeBufferSelect
 			entry.BufIG = 7
 		},
 		prepareSend: func(t *testing.T, context testContext, conn *tcpConn, buffer []byte, entry *SubmissionQueueEntry) {
 			entry.PrepareSend(
-				conn.fd, uintptr(unsafe.Pointer(&buffer[0])), uint32(len(buffer)), 0)
+				conn.fd, buffer, uint32(len(buffer)), 0)
 		},
 		prepareClose: func(t *testing.T, tc testContext, conn *tcpConn, entry *SubmissionQueueEntry) {
 			entry.PrepareClose(conn.fd)
@@ -524,6 +703,35 @@ func TestRecvMsgSendMsgTCP(t *testing.T) {
 		recvDataProvider: func(ctx testContext, conn *tcpConn, cqe *CompletionQueueEvent) []byte {
 			return conn.buffer[:18]
 		},
+
+		sendDataAssert: []func(*testing.T, testContext, *tcpConn, *CompletionQueueEvent){
+			func(t *testing.T, ctx testContext, conn *tcpConn, cqe *CompletionQueueEvent) {
+				Equal(t, uint64(conn.fd), cqe.UserData & ^allFlagsMask)
+				Equal(t, uint32(0), cqe.Flags)
+				Equal(t, int32(bufferSize), cqe.Res)
+			},
+		},
+	})
+}
+
+func TestRecvMsgSendMsgZCTCP(t *testing.T) {
+	testNetwork(t, networkTestScenario{
+		prepareAccept: prepareSingleAccept,
+		prepareRecv: func(t *testing.T, context testContext, conn *tcpConn, entry *SubmissionQueueEntry) {
+			entry.PrepareRecvMsg(conn.fd, conn.msg, 0)
+		},
+		prepareSend: func(t *testing.T, context testContext, conn *tcpConn, buffer []byte, entry *SubmissionQueueEntry) {
+			entry.PrepareSendmsgZC(conn.fd, conn.msg, 0)
+		},
+		prepareClose: func(t *testing.T, tc testContext, conn *tcpConn, entry *SubmissionQueueEntry) {
+			entry.PrepareClose(conn.fd)
+		},
+
+		recvDataProvider: func(ctx testContext, conn *tcpConn, cqe *CompletionQueueEvent) []byte {
+			return conn.buffer[:18]
+		},
+
+		sendDataAssert: zcSendDataAsserts(bufferSize),
 	})
 }
 
@@ -535,12 +743,12 @@ func TestRecvMsgMultiSendTCP(t *testing.T) {
 			buffers := make([][]byte, 16)
 			ts := syscall.NsecToTimespec((time.Millisecond).Nanoseconds())
 			for i := 0; i < len(buffers); i++ {
-				buffers[i] = make([]byte, 1024)
+				buffers[i] = make([]byte, bufferSize)
 
 				sqe := ring.GetSQE()
 				NotNil(t, sqe)
 
-				sqe.PrepareProvideBuffers(uintptr(unsafe.Pointer(&buffers[i][0])), len(buffers[i]), 1, 7, i)
+				sqe.PrepareProvideBuffers(buffers[i], len(buffers[i]), 1, 7, i)
 				sqe.UserData = 777
 
 				cqe, err := ring.SubmitAndWaitTimeout(1, &ts, nil)
@@ -558,7 +766,7 @@ func TestRecvMsgMultiSendTCP(t *testing.T) {
 			entry.BufIG = 7
 		},
 		prepareSend: func(t *testing.T, ctx testContext, conn *tcpConn, buffer []byte, entry *SubmissionQueueEntry) {
-			entry.PrepareSend(conn.fd, uintptr(unsafe.Pointer(&buffer[0])), uint32(len(buffer)), 0)
+			entry.PrepareSend(conn.fd, buffer, uint32(len(buffer)), 0)
 		},
 		prepareClose: func(t *testing.T, tc testContext, conn *tcpConn, entry *SubmissionQueueEntry) {
 			entry.PrepareClose(conn.fd)
@@ -653,16 +861,16 @@ func TestMultiAcceptMultiRecvMultiDirectBufRingTCP(t *testing.T) {
 			socketFd, ok := context["socketFd"].(int)
 			True(t, ok)
 
-			entry.PrepareMultishotAcceptDirect(socketFd, 0, 0, 0)
+			entry.PrepareMultishotAcceptDirect(socketFd, nil, 0, 0)
 		},
 		prepareRecv: func(t *testing.T, context testContext, conn *tcpConn, entry *SubmissionQueueEntry) {
-			entry.PrepareRecvMultishot(conn.fd, 0, 0, 0)
+			entry.PrepareRecvMultishot(conn.fd, nil, 0, 0)
 			entry.Flags |= SqeBufferSelect
 			entry.Flags |= SqeFixedFile
 		},
 		prepareSend: func(t *testing.T, ctx testContext, conn *tcpConn, buffer []byte, entry *SubmissionQueueEntry) {
 			entry.PrepareSend(
-				conn.fd, uintptr(unsafe.Pointer(&buffer[0])), uint32(len(buffer)), 0)
+				conn.fd, buffer, uint32(len(buffer)), 0)
 			entry.Flags |= SqeFixedFile
 		},
 		prepareClose: func(t *testing.T, tc testContext, conn *tcpConn, entry *SubmissionQueueEntry) {

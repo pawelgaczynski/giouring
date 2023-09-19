@@ -225,8 +225,6 @@ const (
 	MsgSendFd
 )
 
-var msgDataVar = MsgData
-
 const (
 	MsgRingCQESkip uint32 = 1 << iota
 	MsgRingFlagsPass

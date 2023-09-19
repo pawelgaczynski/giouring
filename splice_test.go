@@ -32,8 +32,8 @@ import (
 )
 
 func TestSplice(t *testing.T) {
-	testCase(t, ringInitParams{}, testScenario{
-		setup: func(ctx testContext) {
+	testCase(t, testScenario{
+		setup: func(t *testing.T, ring *Ring, ctx testContext) {
 			file1, err := os.CreateTemp("", "splice_1")
 			NoError(t, err)
 			ctx["file1"] = file1
@@ -50,24 +50,22 @@ func TestSplice(t *testing.T) {
 			ctx["pipeW"] = pipeW
 		},
 
-		prepares: []func(*testing.T, testContext, *SubmissionQueueEntry) bool{
-			func(t *testing.T, ctx testContext, sqe *SubmissionQueueEntry) bool {
+		prepares: []prepare{
+			func(t *testing.T, ctx testContext, sqe *SubmissionQueueEntry) {
 				file1, ok := ctx["file1"].(*os.File)
 				True(t, ok)
 				pipeW, ok := ctx["pipeW"].(*os.File)
 				True(t, ok)
 				sqe.PrepareSplice(int(file1.Fd()), -1, int(pipeW.Fd()), -1, 4, 0)
 				sqe.UserData = 1
-				return true
 			},
-			func(t *testing.T, ctx testContext, sqe *SubmissionQueueEntry) bool {
+			func(t *testing.T, ctx testContext, sqe *SubmissionQueueEntry) {
 				file2, ok := ctx["file2"].(*os.File)
 				True(t, ok)
 				pipeR, ok := ctx["pipeR"].(*os.File)
 				True(t, ok)
 				sqe.PrepareSplice(int(pipeR.Fd()), -1, int(file2.Fd()), -1, 4, 0)
 				sqe.UserData = 2
-				return true
 			},
 		},
 
@@ -103,8 +101,8 @@ func TestSplice(t *testing.T) {
 }
 
 func TestTee(t *testing.T) {
-	testCase(t, ringInitParams{}, testScenario{
-		setup: func(ctx testContext) {
+	testCase(t, testScenario{
+		setup: func(t *testing.T, ring *Ring, ctx testContext) {
 			pipe1R, pipe1W, err := os.Pipe()
 			NoError(t, err)
 			ctx["pipe1R"] = pipe1R
@@ -120,15 +118,14 @@ func TestTee(t *testing.T) {
 			Equal(t, 4, n)
 		},
 
-		prepares: []func(*testing.T, testContext, *SubmissionQueueEntry) bool{
-			func(t *testing.T, ctx testContext, sqe *SubmissionQueueEntry) bool {
+		prepares: []prepare{
+			func(t *testing.T, ctx testContext, sqe *SubmissionQueueEntry) {
 				pipe1R, ok := ctx["pipe1R"].(*os.File)
 				True(t, ok)
 				pipe2W, ok := ctx["pipe2W"].(*os.File)
 				True(t, ok)
 				sqe.PrepareTee(int(pipe1R.Fd()), int(pipe2W.Fd()), 4, 0)
 				sqe.UserData = 1
-				return true
 			},
 		},
 
@@ -153,7 +150,7 @@ func TestTee(t *testing.T) {
 		},
 
 		cleanup: func(ctx testContext) {
-			files := []string{"file1", "file2"}
+			files := []string{"pipe1R", "pipe1W", "pipe2R", "pipe2W"}
 			for i := 0; i < len(files); i++ {
 				if val, ok := ctx[files[i]]; ok {
 					file, fileOk := val.(*os.File)

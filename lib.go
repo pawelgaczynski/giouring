@@ -24,7 +24,6 @@
 package giouring
 
 import (
-	"fmt"
 	"sync/atomic"
 	"syscall"
 	"unsafe"
@@ -282,9 +281,7 @@ func internalPeekCQE(ring *Ring, nrAvailable *uint32) (*CompletionQueueEvent, er
 
 // liburing: io_uring_peek_cqe - https://manpages.debian.org/unstable/liburing-dev/io_uring_peek_cqe.3.en.html
 func (ring *Ring) PeekCQE() (*CompletionQueueEvent, error) {
-	fmt.Println("PeekCQE")
 	cqe, err := internalPeekCQE(ring, nil)
-	fmt.Printf("internalPeekCQE: %v, %v\n", cqe, err)
 	if err == nil && cqe != nil {
 		return cqe, nil
 	}

@@ -30,23 +30,21 @@ import (
 	. "github.com/stretchr/testify/require"
 )
 
-func testCancelRequest(t *testing.T, cancelRequest func(t *testing.T, ctx testContext, sqe *SubmissionQueueEntry) bool) {
-	acceptRequest := func(t *testing.T, ctx testContext, sqe *SubmissionQueueEntry) bool {
+func testCancelRequest(t *testing.T, cancelRequest prepare) {
+	acceptRequest := func(t *testing.T, ctx testContext, sqe *SubmissionQueueEntry) {
 		socketFd, ok := ctx["socketFd"].(int)
 		True(t, ok)
-		sqe.PrepareAccept(socketFd, 0, 0, 0)
+		sqe.PrepareAccept(socketFd, nil, 0, 0)
 		sqe.UserData = 1
-
-		return false
 	}
 
-	testCase(t, ringInitParams{}, testScenario{
-		setup: func(ctx testContext) {
+	testCase(t, testScenario{
+		setup: func(t *testing.T, ring *Ring, ctx testContext) {
 			socketFd, _ := listenSocket(t)
 			ctx["socketFd"] = socketFd
 		},
 
-		prepares: []func(*testing.T, testContext, *SubmissionQueueEntry) bool{
+		prepares: []prepare{
 			acceptRequest,
 			acceptRequest,
 			acceptRequest,
@@ -69,49 +67,44 @@ func testCancelRequest(t *testing.T, cancelRequest func(t *testing.T, ctx testCo
 		cleanup: func(ctx testContext) {
 			socketFd, ok := ctx["socketFd"].(int)
 			True(t, ok)
-			syscall.Close(socketFd)
+			err := syscall.Shutdown(socketFd, syscall.SHUT_RDWR)
+			NoError(t, err)
 		},
 	})
 }
 
 func TestCancel64(t *testing.T) {
-	cancelRequest := func(t *testing.T, ctx testContext, sqe *SubmissionQueueEntry) bool {
+	cancelRequest := func(t *testing.T, ctx testContext, sqe *SubmissionQueueEntry) {
 		socketFd, ok := ctx["socketFd"].(int)
 		True(t, ok)
 		sqe.PrepareCancel64(0, int(AsyncCancelAll))
 		sqe.OpcodeFlags |= AsyncCancelFd
 		sqe.Fd = int32(socketFd)
 		sqe.UserData = 2
-
-		return true
 	}
 
 	testCancelRequest(t, cancelRequest)
 }
 
 func TestCancel(t *testing.T) {
-	cancelRequest := func(t *testing.T, ctx testContext, sqe *SubmissionQueueEntry) bool {
+	cancelRequest := func(t *testing.T, ctx testContext, sqe *SubmissionQueueEntry) {
 		socketFd, ok := ctx["socketFd"].(int)
 		True(t, ok)
-		sqe.PrepareCancel(0, int(AsyncCancelAll))
+		sqe.PrepareCancel(nil, int(AsyncCancelAll))
 		sqe.OpcodeFlags |= AsyncCancelFd
 		sqe.Fd = int32(socketFd)
 		sqe.UserData = 2
-
-		return true
 	}
 
 	testCancelRequest(t, cancelRequest)
 }
 
 func TestCancelFd(t *testing.T) {
-	cancelRequest := func(t *testing.T, ctx testContext, sqe *SubmissionQueueEntry) bool {
+	cancelRequest := func(t *testing.T, ctx testContext, sqe *SubmissionQueueEntry) {
 		socketFd, ok := ctx["socketFd"].(int)
 		True(t, ok)
 		sqe.PrepareCancelFd(socketFd, AsyncCancelFd|AsyncCancelAll)
 		sqe.UserData = 2
-
-		return true
 	}
 
 	testCancelRequest(t, cancelRequest)

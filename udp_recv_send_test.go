@@ -24,98 +24,14 @@
 package giouring
 
 import (
-	"fmt"
-	"sync"
 	"syscall"
 	"testing"
+	"time"
 	"unsafe"
 
 	. "github.com/stretchr/testify/require"
 	"golang.org/x/sys/unix"
 )
-
-// const (
-// 	udpRecv = iota
-// 	udpSend
-// )
-
-// func anyToSockaddrInet4(rsa *syscall.RawSockaddrAny) (*syscall.SockaddrInet4, error) {
-// 	if rsa == nil {
-// 		return nil, syscall.EINVAL
-// 	}
-
-// 	if rsa.Addr.Family != syscall.AF_INET {
-// 		return nil, syscall.EAFNOSUPPORT
-// 	}
-
-// 	rsaPointer := (*syscall.RawSockaddrInet4)(unsafe.Pointer(rsa))
-// 	sockAddr := new(syscall.SockaddrInet4)
-// 	p := (*[2]byte)(unsafe.Pointer(&rsaPointer.Port))
-// 	sockAddr.Port = int(p[0])<<8 + int(p[1])
-
-// 	for i := 0; i < len(sockAddr.Addr); i++ {
-// 		sockAddr.Addr[i] = rsaPointer.Addr[i]
-// 	}
-
-// 	return sockAddr, nil
-// }
-
-// type udpConnection struct {
-// 	msg           *syscall.Msghdr
-// 	rsa           *syscall.RawSockaddrAny
-// 	buffer        []byte
-// 	controlBuffer []byte
-// 	fd            uint64
-// 	state         int
-// }
-
-// func udpLoop(t *testing.T, ring *Ring, socketFd int, connection *udpConnection) bool {
-// 	t.Helper()
-
-// 	cqe, err := ring.WaitCQE()
-// 	if errors.Is(err, syscall.EAGAIN) || errors.Is(err, syscall.EINTR) ||
-// 		errors.Is(err, syscall.ETIME) {
-// 		return false
-// 	}
-
-// 	NoError(t, err)
-// 	entry := ring.GetSQE()
-// 	NotNil(t, entry)
-// 	ring.CQESeen(cqe)
-
-// 	switch connection.state {
-// 	case udpRecv:
-// 		_, err = anyToSockaddrInet4(connection.rsa)
-// 		if err != nil {
-// 			log.Panic(err)
-// 		}
-
-// 		Equal(t, "testdata1234567890", string(connection.buffer[:18]))
-// 		connection.buffer = connection.buffer[:0]
-// 		data := []byte("responsedata0123456789")
-// 		copied := copy(connection.buffer[:len(data)], data)
-// 		Equal(t, 22, copied)
-// 		buffer := connection.buffer[:len(data)]
-
-// 		connection.msg.Iov.Base = (*byte)(unsafe.Pointer(&buffer[0]))
-// 		connection.msg.Iov.SetLen(len(buffer))
-// 		entry.PrepareSendMsg(socketFd, connection.msg, 0)
-
-// 		entry.UserData = connection.fd
-// 		connection.state = udpSend
-
-// 	case udpSend:
-// 		Equal(t, connection.fd, cqe.UserData)
-// 		Equal(t, cqe.Res, int32(22))
-
-// 		return true
-// 	}
-// 	cqeNr, err := ring.Submit()
-// 	NoError(t, err)
-// 	Equal(t, uint(1), cqeNr)
-
-// 	return false
-// }
 
 var udpTestPort = getTestPort()
 
@@ -126,21 +42,20 @@ func prepareMsgHdr(buffer []byte, rsa *syscall.RawSockaddrAny, addressSize int) 
 
 	var msg syscall.Msghdr
 	msg.Name = (*byte)(unsafe.Pointer(rsa))
-	msg.Namelen = uint32(addressSize) //uint32(syscall.SizeofSockaddrAny)
+	msg.Namelen = uint32(addressSize)
 	msg.Iov = &iovec
 	msg.Iovlen = 1
 
-	// controlBuffer := make([]byte, 1000)
-	// msg.Control = (*byte)(unsafe.Pointer(&controlBuffer[0]))
-	// msg.SetControllen(len(controlBuffer))
 	return msg
 }
 
 type udpServer struct {
-	ring *Ring
+	ring         *Ring
+	dataReceived chan bool
 }
 
 func (s *udpServer) init(t *testing.T) {
+	s.dataReceived = make(chan bool, 1)
 	var err error
 	s.ring, err = CreateRing(16)
 	NoError(t, err)
@@ -182,6 +97,8 @@ func (s *udpServer) serve(t *testing.T) {
 	Equal(t, cqe.Res, int32(18))
 
 	s.ring.CQESeen(cqe)
+
+	s.dataReceived <- true
 }
 
 func (s *udpServer) exit() {
@@ -196,34 +113,56 @@ type clientCtx struct {
 	msghdr       *syscall.Msghdr
 }
 
-func sendtoFunction(entry *SubmissionQueueEntry, ctx *clientCtx) {
-	entry.PrepareSendto(ctx.clientSockFd, ctx.buffer, 0, ctx.rsa, uint32(ctx.addressSize))
-	entry.UserData = 4
+func sendtoFunctionFactory(fixed bool) func(*SubmissionQueueEntry, *clientCtx) {
+	return func(entry *SubmissionQueueEntry, ctx *clientCtx) {
+		entry.PrepareSendto(ctx.clientSockFd, ctx.buffer, 0, ctx.rsa, uint32(ctx.addressSize))
+		entry.UserData = 4
+		if fixed {
+			entry.Flags |= SqeFixedFile
+		}
+	}
 }
 
 func sendmsgFunction(entry *SubmissionQueueEntry, ctx *clientCtx) {
 	msghdr := prepareMsgHdr(ctx.buffer, ctx.rsa, ctx.addressSize)
 	ctx.msghdr = &msghdr
-
-	fmt.Printf("msghdr: %+v\n", msghdr)
-	fmt.Printf("rsa: %+v\n", ctx.rsa)
-
 	entry.PrepareSendMsg(ctx.clientSockFd, ctx.msghdr, 0)
 	entry.UserData = 4
 }
 
+func prepareSocket(entry *SubmissionQueueEntry) {
+	entry.PrepareSocket(unix.AF_INET, unix.SOCK_DGRAM, 0, 0)
+}
+
+func prepareSocketDirect(entry *SubmissionQueueEntry) {
+	entry.PrepareSocketDirect(unix.AF_INET, unix.SOCK_DGRAM, 0, 0, 0)
+}
+
+func prepareSocketDirectAlloc(entry *SubmissionQueueEntry) {
+	entry.PrepareSocketDirectAlloc(unix.AF_INET, unix.SOCK_DGRAM, 0, 0)
+}
+
 func TestUDPRecvSendto(t *testing.T) {
-	testUDP(t, sendtoFunction)
+	testUDP(t, false, prepareSocket, sendtoFunctionFactory(false))
+}
+
+func TestUDPRecvSendtoSocketDirect(t *testing.T) {
+	testUDP(t, true, prepareSocketDirect, sendtoFunctionFactory(true))
+}
+
+func TestUDPRecvSendtoSocketDirectAlloc(t *testing.T) {
+	testUDP(t, true, prepareSocketDirectAlloc, sendtoFunctionFactory(true))
 }
 
 func TestUDPRecvSendmsg(t *testing.T) {
-	testUDP(t, sendmsgFunction)
+	testUDP(t, false, prepareSocket, sendmsgFunction)
 }
 
-func testUDP(t *testing.T, sendFunc func(*SubmissionQueueEntry, *clientCtx)) {
-	var wg sync.WaitGroup
-	wg.Add(1)
-
+func testUDP(t *testing.T,
+	fixed bool,
+	prepareSocketFunc func(*SubmissionQueueEntry),
+	sendFunc func(*SubmissionQueueEntry, *clientCtx),
+) {
 	var server udpServer
 	server.init(t)
 
@@ -231,7 +170,6 @@ func testUDP(t *testing.T, sendFunc func(*SubmissionQueueEntry, *clientCtx)) {
 
 	go func() {
 		server.serve(t)
-		wg.Done()
 	}()
 
 	ring, err := CreateRing(16)
@@ -239,10 +177,19 @@ func testUDP(t *testing.T, sendFunc func(*SubmissionQueueEntry, *clientCtx)) {
 
 	defer ring.QueueExit()
 
+	var files []int
+	if fixed {
+		files = []int{-1}
+		regRes, regErr := ring.RegisterFiles(files)
+		NoError(t, regErr)
+		Equal(t, uint(0), regRes)
+	}
+
 	entry := ring.GetSQE()
 	NotNil(t, entry)
 
-	entry.PrepareSocket(unix.AF_INET, unix.SOCK_DGRAM, 0, 0)
+	prepareSocketFunc(entry)
+
 	entry.UserData = 1
 
 	submitted, err := ring.SubmitAndWait(1)
@@ -254,7 +201,11 @@ func testUDP(t *testing.T, sendFunc func(*SubmissionQueueEntry, *clientCtx)) {
 	NotNil(t, cqe)
 
 	Equal(t, uint64(1), cqe.UserData)
-	Greater(t, cqe.Res, int32(0))
+	if fixed {
+		Equal(t, int32(0), cqe.Res)
+	} else {
+		Greater(t, cqe.Res, int32(0))
+	}
 
 	var ctx clientCtx
 	ctx.clientSockFd = int(cqe.Res)
@@ -272,13 +223,11 @@ func testUDP(t *testing.T, sendFunc func(*SubmissionQueueEntry, *clientCtx)) {
 	}
 	ctx.addressSize = syscall.SizeofSockaddrAny
 
-	// var sockaddr syscall.SockaddrInet4
-	// sockaddr.Addr = [4]byte{127, 0, 0, 1}
-	// sockaddr.Port = udpTestPort
-
 	entry.PrepareConnect(ctx.clientSockFd, ctx.rsa, uint64(ctx.addressSize))
-	// entry.PrepareConnect(clientSockFd, &sockaddr)
 	entry.UserData = 3
+	if fixed {
+		entry.Flags |= SqeFixedFile
+	}
 
 	submitted, err = ring.SubmitAndWait(1)
 	NoError(t, err)
@@ -293,28 +242,42 @@ func testUDP(t *testing.T, sendFunc func(*SubmissionQueueEntry, *clientCtx)) {
 
 	ring.CQESeen(cqe)
 
-	entry = ring.GetSQE()
-	NotNil(t, entry)
+	ticker := time.NewTicker(300 * time.Millisecond)
+	defer ticker.Stop()
 
-	ctx.buffer = []byte("testdata1234567890")
-	sendFunc(entry, &ctx)
+	send := func() {
+		entry = ring.GetSQE()
+		NotNil(t, entry)
+		ctx.buffer = []byte("testdata1234567890")
 
-	// sendtoFunction(entry, clientSockFd, rsa, sendBuffer)
+		sendFunc(entry, &ctx)
 
-	submitted, err = ring.SubmitAndWait(1)
-	NoError(t, err)
-	Equal(t, uint(1), submitted)
+		submitted, err = ring.SubmitAndWait(1)
+		NoError(t, err)
+		Equal(t, uint(1), submitted)
 
-	cqe, err = ring.PeekCQE()
-	NoError(t, err)
-	NotNil(t, cqe)
+		cqe, err = ring.PeekCQE()
+		NoError(t, err)
+		NotNil(t, cqe)
+		Equal(t, uint64(4), cqe.UserData)
+		Equal(t, int32(len(ctx.buffer)), cqe.Res)
 
-	// runtime.KeepAlive(rsa)
+		ring.CQESeen(cqe)
+	}
 
-	Equal(t, uint64(4), cqe.UserData)
-	Equal(t, int32(len(ctx.buffer)), cqe.Res)
+	send()
 
-	ring.CQESeen(cqe)
-
-	wg.Wait()
+	select {
+	case <-server.dataReceived:
+		return
+	default:
+		for {
+			select {
+			case <-server.dataReceived:
+				return
+			case <-ticker.C:
+				send()
+			}
+		}
+	}
 }
