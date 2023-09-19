@@ -187,6 +187,7 @@ const (
 	TimeoutRealtime
 	LinkTimeoutUpdate
 	TimeoutETimeSuccess
+	TimeoutMultishot
 	TimeoutClockMask  = TimeoutBoottime | TimeoutRealtime
 	TimeoutUpdateMask = TimeoutUpdate | LinkTimeoutUpdate
 )
