@@ -32,8 +32,8 @@ import (
 )
 
 func TestSplice(t *testing.T) {
-	testNewFramework(t, ringInitParams{}, testScenario{
-		setup: func(ctx testContext) {
+	testCase(t, testScenario{
+		setup: func(t *testing.T, ring *Ring, ctx testContext) {
 			file1, err := os.CreateTemp("", "splice_1")
 			NoError(t, err)
 			ctx["file1"] = file1
@@ -50,7 +50,7 @@ func TestSplice(t *testing.T) {
 			ctx["pipeW"] = pipeW
 		},
 
-		prepares: []func(*testing.T, testContext, *SubmissionQueueEntry){
+		prepares: []prepare{
 			func(t *testing.T, ctx testContext, sqe *SubmissionQueueEntry) {
 				file1, ok := ctx["file1"].(*os.File)
 				True(t, ok)
@@ -101,8 +101,8 @@ func TestSplice(t *testing.T) {
 }
 
 func TestTee(t *testing.T) {
-	testNewFramework(t, ringInitParams{}, testScenario{
-		setup: func(ctx testContext) {
+	testCase(t, testScenario{
+		setup: func(t *testing.T, ring *Ring, ctx testContext) {
 			pipe1R, pipe1W, err := os.Pipe()
 			NoError(t, err)
 			ctx["pipe1R"] = pipe1R
@@ -118,7 +118,7 @@ func TestTee(t *testing.T) {
 			Equal(t, 4, n)
 		},
 
-		prepares: []func(*testing.T, testContext, *SubmissionQueueEntry){
+		prepares: []prepare{
 			func(t *testing.T, ctx testContext, sqe *SubmissionQueueEntry) {
 				pipe1R, ok := ctx["pipe1R"].(*os.File)
 				True(t, ok)
@@ -150,7 +150,7 @@ func TestTee(t *testing.T) {
 		},
 
 		cleanup: func(ctx testContext) {
-			files := []string{"file1", "file2"}
+			files := []string{"pipe1R", "pipe1W", "pipe2R", "pipe2W"}
 			for i := 0; i < len(files); i++ {
 				if val, ok := ctx[files[i]]; ok {
 					file, fileOk := val.(*os.File)

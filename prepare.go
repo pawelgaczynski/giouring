@@ -25,7 +25,6 @@ package giouring
 
 import (
 	"syscall"
-	"time"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -36,8 +35,7 @@ func (entry *SubmissionQueueEntry) setTargetFixedFile(fileIndex uint32) {
 	entry.SpliceFdIn = int32(fileIndex + 1)
 }
 
-// liburing: io_uring_prep_rw
-func (entry *SubmissionQueueEntry) prepareRW(opcode uint8, fd int, addr uintptr, length uint32, offset uint64) {
+func (entry *SubmissionQueueEntry) prepareRWUintptr(opcode uint8, fd int, addr uintptr, length uint32, offset uint64) {
 	entry.OpCode = opcode
 	entry.Flags = 0
 	entry.IoPrio = 0
@@ -51,15 +49,30 @@ func (entry *SubmissionQueueEntry) prepareRW(opcode uint8, fd int, addr uintptr,
 	entry.SpliceFdIn = 0
 }
 
+// liburing: io_uring_prep_rw
+func (entry *SubmissionQueueEntry) prepareRW(opcode uint8, fd int, addr unsafe.Pointer, length uint32, offset uint64) {
+	entry.OpCode = opcode
+	entry.Flags = 0
+	entry.IoPrio = 0
+	entry.Fd = int32(fd)
+	entry.Off = offset
+	entry.Addr = uint64(uintptr(addr))
+	entry.Len = length
+	entry.UserData = 0
+	entry.BufIG = 0
+	entry.Personality = 0
+	entry.SpliceFdIn = 0
+}
+
 // liburing: io_uring_prep_accept - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_accept.3.en.html
-func (entry *SubmissionQueueEntry) PrepareAccept(fd int, addr uintptr, addrLen uint64, flags uint32) {
+func (entry *SubmissionQueueEntry) PrepareAccept(fd int, addr unsafe.Pointer, addrLen uint64, flags uint32) {
 	entry.prepareRW(OpAccept, fd, addr, 0, addrLen)
 	entry.OpcodeFlags = flags
 }
 
 // liburing: io_uring_prep_accept_direct - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_accept_direct.3.en.html
 func (entry *SubmissionQueueEntry) PrepareAcceptDirect(
-	fd int, addr uintptr, addrLen uint64, flags uint32, fileIndex uint32,
+	fd int, addr unsafe.Pointer, addrLen uint64, flags uint32, fileIndex uint32,
 ) {
 	entry.PrepareAccept(fd, addr, addrLen, flags)
 
@@ -71,26 +84,26 @@ func (entry *SubmissionQueueEntry) PrepareAcceptDirect(
 }
 
 // liburing: io_uring_prep_cancel - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_cancel.3.en.html
-func (entry *SubmissionQueueEntry) PrepareCancel(userData uintptr, flags int) {
-	entry.PrepareCancel64(uint64(userData), flags)
+func (entry *SubmissionQueueEntry) PrepareCancel(userData unsafe.Pointer, flags int) {
+	entry.PrepareCancel64(uint64(uintptr(userData)), flags)
 }
 
 // liburing: io_uring_prep_cancel64 - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_cancel64.3.en.html
 func (entry *SubmissionQueueEntry) PrepareCancel64(userData uint64, flags int) {
-	entry.prepareRW(OpAsyncCancel, -1, 0, 0, 0)
+	entry.prepareRW(OpAsyncCancel, -1, nil, 0, 0)
 	entry.Addr = userData
 	entry.OpcodeFlags = uint32(flags)
 }
 
 // liburing: io_uring_prep_cancel_fd
 func (entry *SubmissionQueueEntry) PrepareCancelFd(fd int, flags uint32) {
-	entry.prepareRW(OpAsyncCancel, fd, 0, 0, 0)
+	entry.prepareRW(OpAsyncCancel, fd, nil, 0, 0)
 	entry.OpcodeFlags = flags | AsyncCancelFd
 }
 
 // liburing: io_uring_prep_close - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_close.3.en.html
 func (entry *SubmissionQueueEntry) PrepareClose(fd int) {
-	entry.prepareRW(OpClose, fd, 0, 0, 0)
+	entry.prepareRW(OpClose, fd, nil, 0, 0)
 }
 
 // liburing: io_uring_prep_close_direct - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_close_direct.3.en.html
@@ -100,51 +113,52 @@ func (entry *SubmissionQueueEntry) PrepareCloseDirect(fileIndex uint32) {
 }
 
 // liburing: io_uring_prep_connect - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_connect.3.en.html
-func (entry *SubmissionQueueEntry) PrepareConnect(fd int, addr *syscall.Sockaddr, addrLen uint64) {
-	entry.prepareRW(OpConnect, fd, uintptr(unsafe.Pointer(addr)), 0, addrLen)
+func (entry *SubmissionQueueEntry) PrepareConnect(fd int, addr *syscall.RawSockaddrAny, addrLen uint64) {
+	entry.prepareRW(OpConnect, fd, unsafe.Pointer(addr), 0, addrLen)
 }
 
 // io_uring_prep_fadvise - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_fadvise.3.en.html
-func (entry *SubmissionQueueEntry) PrepareFadvise(fd int, offset uint64, length int, advise uint32) {
-	entry.prepareRW(OpFadvise, fd, 0, uint32(length), offset)
-	entry.OpcodeFlags = advise
+func (entry *SubmissionQueueEntry) PrepareFadvise(fd int, offset uint64, length int, advise int) {
+	entry.prepareRW(OpFadvise, fd, nil, uint32(length), offset)
+	entry.OpcodeFlags = uint32(advise)
 }
 
 // liburing: io_uring_prep_fallocate - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_fallocate.3.en.html
 func (entry *SubmissionQueueEntry) PrepareFallocate(fd int, mode int, offset, length uint64) {
-	entry.prepareRW(OpFallocate, fd, 0, uint32(mode), offset)
+	entry.prepareRW(OpFallocate, fd, nil, uint32(mode), offset)
 	entry.Addr = length
 }
 
 // liburing: io_uring_prep_fgetxattr - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_fgetxattr.3.en.html
 func (entry *SubmissionQueueEntry) PrepareFgetxattr(fd int, name, value []byte) {
-	entry.prepareRW(OpFgetxattr, fd, uintptr(unsafe.Pointer(&name)),
-		uint32(len(value)), uint64(uintptr(unsafe.Pointer(&value))))
+	entry.prepareRW(OpFgetxattr, fd, unsafe.Pointer(&name[0]),
+		uint32(len(value)), uint64(uintptr(unsafe.Pointer(&value[0]))))
+	entry.OpcodeFlags = 0
 }
 
 // liburing: io_uring_prep_files_update - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_files_update.3.en.html
 func (entry *SubmissionQueueEntry) PrepareFilesUpdate(fds []int, offset int) {
-	entry.prepareRW(OpFilesUpdate, -1, uintptr(unsafe.Pointer(&fds)), uint32(len(fds)), uint64(offset))
+	entry.prepareRW(OpFilesUpdate, -1, unsafe.Pointer(&fds[0]), uint32(len(fds)), uint64(offset))
 }
 
 // liburing: io_uring_prep_fsetxattr - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_fsetxattr.3.en.html
-func (entry *SubmissionQueueEntry) PrepareFsetxattr(fd int, name, value []byte, flags int) {
+func (entry *SubmissionQueueEntry) PrepareFsetxattr(fd int, name, value []byte, flags int, length uint) {
 	entry.prepareRW(
-		OpFsetxattr, fd, uintptr(unsafe.Pointer(&name)), uint32(len(value)), uint64(uintptr(unsafe.Pointer(&value))))
+		OpFsetxattr, fd, unsafe.Pointer(&name[0]), uint32(length), uint64(uintptr(unsafe.Pointer(&value[0]))))
 	entry.OpcodeFlags = uint32(flags)
 }
 
 // liburing: io_uring_prep_fsync - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_fsync.3.en.html
 func (entry *SubmissionQueueEntry) PrepareFsync(fd int, flags uint32) {
-	entry.prepareRW(OpFsync, fd, 0, 0, 0)
+	entry.prepareRW(OpFsync, fd, nil, 0, 0)
 	entry.OpcodeFlags = flags
 }
 
 // liburing: io_uring_prep_getxattr - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_getxattr.3.en.html
 func (entry *SubmissionQueueEntry) PrepareGetxattr(name, value, path []byte) {
-	entry.prepareRW(OpGetxattr, 0, uintptr(unsafe.Pointer(&name)),
-		uint32(len(value)), uint64(uintptr(unsafe.Pointer(&value))))
-	entry.Addr3 = uint64(uintptr(unsafe.Pointer(&path)))
+	entry.prepareRW(OpGetxattr, 0, unsafe.Pointer(&name[0]),
+		uint32(len(value)), uint64(uintptr(unsafe.Pointer(&value[0]))))
+	entry.Addr3 = uint64(uintptr(unsafe.Pointer(&path[0])))
 	entry.OpcodeFlags = 0
 }
 
@@ -154,22 +168,21 @@ func (entry *SubmissionQueueEntry) PrepareLink(oldPath, newPath []byte, flags in
 }
 
 // liburing: io_uring_prep_link_timeout - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_link_timeout.3.en.html
-func (entry *SubmissionQueueEntry) PrepareLinkTimeout(duration time.Duration, flags uint32) {
-	spec := syscall.NsecToTimespec(duration.Nanoseconds())
-	entry.prepareRW(OpLinkTimeout, -1, uintptr(unsafe.Pointer(&spec)), 1, 0)
+func (entry *SubmissionQueueEntry) PrepareLinkTimeout(spec *syscall.Timespec, flags uint32) {
+	entry.prepareRW(OpLinkTimeout, -1, unsafe.Pointer(spec), 1, 0)
 	entry.OpcodeFlags = flags
 }
 
 // liburing: io_uring_prep_linkat - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_linkat.3.en.html
 func (entry *SubmissionQueueEntry) PrepareLinkat(oldFd int, oldPath []byte, newFd int, newPath []byte, flags int) {
-	entry.prepareRW(OpLinkat, oldFd, uintptr(unsafe.Pointer(&oldPath)),
-		uint32(newFd), uint64(uintptr(unsafe.Pointer(&newPath))))
+	entry.prepareRW(OpLinkat, oldFd, unsafe.Pointer(&oldPath[0]),
+		uint32(newFd), uint64(uintptr(unsafe.Pointer(&newPath[0]))))
 	entry.OpcodeFlags = uint32(flags)
 }
 
 // liburing: io_uring_prep_madvise - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_madvise.3.en.html
-func (entry *SubmissionQueueEntry) PrepareMadvise(addr uintptr, length uint, advice int) {
-	entry.prepareRW(OpMadvise, -1, addr, uint32(length), 0)
+func (entry *SubmissionQueueEntry) PrepareMadvise(data []byte, advice int) {
+	entry.prepareRW(OpMadvise, -1, unsafe.Pointer(&data[0]), uint32(len(data)), 0)
 	entry.OpcodeFlags = uint32(advice)
 }
 
@@ -180,25 +193,25 @@ func (entry *SubmissionQueueEntry) PrepareMkdir(path []byte, mode uint32) {
 
 // liburing: io_uring_prep_mkdirat - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_mkdirat.3.en.html
 func (entry *SubmissionQueueEntry) PrepareMkdirat(dfd int, path []byte, mode uint32) {
-	entry.prepareRW(OpMkdirat, dfd, uintptr(unsafe.Pointer(&path)), mode, 0)
+	entry.prepareRW(OpMkdirat, dfd, unsafe.Pointer(&path[0]), mode, 0)
 }
 
 // liburing: io_uring_prep_msg_ring - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_msg_ring.3.en.html
 func (entry *SubmissionQueueEntry) PrepareMsgRing(fd int, length uint32, data uint64, flags uint32) {
-	entry.prepareRW(OpMsgRing, fd, 0, length, data)
+	entry.prepareRW(OpMsgRing, fd, nil, length, data)
 	entry.OpcodeFlags = flags
 }
 
 // liburing: io_uring_prep_msg_ring_cqe_flags - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_msg_ring_cqe_flags.3.en.html
 func (entry *SubmissionQueueEntry) PrepareMsgRingCqeFlags(fd int, length uint32, data uint64, flags, cqeFlags uint32) {
-	entry.prepareRW(OpMsgRing, fd, 0, length, data)
+	entry.prepareRW(OpMsgRing, fd, nil, length, data)
 	entry.OpcodeFlags = MsgRingFlagsPass | flags
 	entry.SpliceFdIn = int32(cqeFlags)
 }
 
 // liburing: io_uring_prep_msg_ring_fd - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_msg_ring_fd.3.en.html
 func (entry *SubmissionQueueEntry) PrepareMsgRingFd(fd int, sourceFd int, targetFd int, data uint64, flags uint32) {
-	entry.prepareRW(OpMsgRing, fd, uintptr(unsafe.Pointer(&msgDataVar)), 0, data)
+	entry.prepareRWUintptr(OpMsgRing, fd, uintptr(MsgSendFd), 0, data)
 	entry.Addr3 = uint64(sourceFd)
 	if uint32(targetFd) == FileIndexAlloc {
 		targetFd--
@@ -213,31 +226,33 @@ func (entry *SubmissionQueueEntry) PrepareMsgRingFdAlloc(fd int, sourceFd int, d
 }
 
 // liburing: io_uring_prep_multishot_accept - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_multishot_accept.3.en.html
-func (entry *SubmissionQueueEntry) PrepareMultishotAccept(fd int, addr uintptr, addrLen uint64, flags int) {
+func (entry *SubmissionQueueEntry) PrepareMultishotAccept(fd int, addr unsafe.Pointer, addrLen uint64, flags int) {
 	entry.PrepareAccept(fd, addr, addrLen, uint32(flags))
 	entry.IoPrio |= AcceptMultishot
 }
 
 // liburing: io_uring_prep_multishot_accept_direct - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_multishot_accept_direct.3.en.html
-func (entry *SubmissionQueueEntry) PrepareMultishotAcceptDirect(fd int, addr uintptr, addrLen uint64, flags int) {
+func (entry *SubmissionQueueEntry) PrepareMultishotAcceptDirect(
+	fd int, addr unsafe.Pointer, addrLen uint64, flags int,
+) {
 	entry.PrepareMultishotAccept(fd, addr, addrLen, flags)
 	entry.setTargetFixedFile(FileIndexAlloc - 1)
 }
 
 // liburing: io_uring_prep_nop - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_nop.3.en.html
 func (entry *SubmissionQueueEntry) PrepareNop() {
-	entry.prepareRW(OpNop, -1, 0, 0, 0)
+	entry.prepareRW(OpNop, -1, nil, 0, 0)
 }
 
 // liburing: io_uring_prep_openat - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_openat.3.en.html
 func (entry *SubmissionQueueEntry) PrepareOpenat(dfd int, path []byte, flags int, mode uint32) {
-	entry.prepareRW(OpOpenat, dfd, uintptr(unsafe.Pointer(&path)), mode, 0)
+	entry.prepareRW(OpOpenat, dfd, unsafe.Pointer(&path[0]), mode, 0)
 	entry.OpcodeFlags = uint32(flags)
 }
 
 // liburing: io_uring_prep_openat2 - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_openat2.3.en.html
 func (entry *SubmissionQueueEntry) PrepareOpenat2(dfd int, path []byte, openHow *unix.OpenHow) {
-	entry.prepareRW(OpOpenat, dfd, uintptr(unsafe.Pointer(&path)),
+	entry.prepareRW(OpOpenat, dfd, unsafe.Pointer(&path[0]),
 		uint32(unsafe.Sizeof(*openHow)), uint64(uintptr(unsafe.Pointer(openHow))))
 }
 
@@ -261,7 +276,7 @@ func (entry *SubmissionQueueEntry) PrepareOpenatDirect(dfd int, path []byte, fla
 
 // liburing: io_uring_prep_poll_add - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_poll_add.3.en.html
 func (entry *SubmissionQueueEntry) PreparePollAdd(fd int, pollMask uint32) {
-	entry.prepareRW(OpPollAdd, fd, 0, 0, 0)
+	entry.prepareRW(OpPollAdd, fd, nil, 0, 0)
 	entry.OpcodeFlags = pollMask
 }
 
@@ -273,47 +288,49 @@ func (entry *SubmissionQueueEntry) PreparePollMultishot(fd int, pollMask uint32)
 
 // liburing: io_uring_prep_poll_remove - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_poll_remove.3.en.html
 func (entry *SubmissionQueueEntry) PreparePollRemove(userData uint64) {
-	entry.prepareRW(OpPollRemove, -1, 0, 0, 0)
+	entry.prepareRW(OpPollRemove, -1, nil, 0, 0)
 	entry.Addr = userData
 }
 
 // liburing: io_uring_prep_poll_update - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_poll_update.3.en.html
 func (entry *SubmissionQueueEntry) PreparePollUpdate(oldUserData, newUserData uint64, pollMask, flags uint32) {
-	entry.prepareRW(OpPollRemove, -1, 0, flags, newUserData)
+	entry.prepareRW(OpPollRemove, -1, nil, flags, newUserData)
 	entry.Addr = oldUserData
 	entry.OpcodeFlags = pollMask
 }
 
 // liburing: io_uring_prep_provide_buffers - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_provide_buffers.3.en.html
-func (entry *SubmissionQueueEntry) PrepareProvideBuffers(addr uintptr, length, nr, bgid, bid int) {
-	entry.prepareRW(OpProvideBuffers, nr, addr, uint32(length), uint64(bid))
+func (entry *SubmissionQueueEntry) PrepareProvideBuffers(buf []byte, length, nr, bgid, bid int) {
+	entry.prepareRW(OpProvideBuffers, nr, unsafe.Pointer(&buf[0]), uint32(length), uint64(bid))
 	entry.BufIG = uint16(bgid)
 }
 
 // liburing: io_uring_prep_read - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_read.3.en.html
-func (entry *SubmissionQueueEntry) PrepareRead(fd int, buf uintptr, nbytes uint32, offset uint64) {
-	entry.prepareRW(OpRead, fd, buf, nbytes, offset)
+func (entry *SubmissionQueueEntry) PrepareRead(fd int, buf []byte, nbytes uint32, offset uint64) {
+	entry.prepareRW(OpRead, fd, unsafe.Pointer(&buf[0]), nbytes, offset)
 }
 
 // liburing: io_uring_prep_read_fixed - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_read_fixed.3.en.html
 func (entry *SubmissionQueueEntry) PrepareReadFixed(
 	fd int,
-	buf uintptr,
+	buf []byte,
 	nbytes uint32,
 	offset uint64,
 	bufIndex int,
 ) {
-	entry.prepareRW(OpReadFixed, fd, buf, nbytes, offset)
+	entry.prepareRW(OpReadFixed, fd, unsafe.Pointer(&buf[0]), nbytes, offset)
 	entry.BufIG = uint16(bufIndex)
 }
 
 // liburing: io_uring_prep_readv - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_readv.3.en.html
-func (entry *SubmissionQueueEntry) PrepareReadv(fd int, iovecs uintptr, nrVecs uint32, offset uint64) {
+func (entry *SubmissionQueueEntry) PrepareReadv(fd int, iovecs unsafe.Pointer, nrVecs uint32, offset uint64) {
 	entry.prepareRW(OpReadv, fd, iovecs, nrVecs, offset)
 }
 
 // liburing: io_uring_prep_readv2 - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_readv2.3.en.html
-func (entry *SubmissionQueueEntry) PrepareReadv2(fd int, iovecs uintptr, nrVecs uint32, offset uint64, flags int) {
+func (entry *SubmissionQueueEntry) PrepareReadv2(
+	fd int, iovecs unsafe.Pointer, nrVecs uint32, offset uint64, flags int,
+) {
 	entry.PrepareReadv(fd, iovecs, nrVecs, offset)
 	entry.OpcodeFlags = uint32(flags)
 }
@@ -321,22 +338,26 @@ func (entry *SubmissionQueueEntry) PrepareReadv2(fd int, iovecs uintptr, nrVecs 
 // liburing: io_uring_prep_recv - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_recv.3.en.html
 func (entry *SubmissionQueueEntry) PrepareRecv(
 	fd int,
-	buf uintptr,
+	buf []byte,
 	length uint32,
 	flags int,
 ) {
-	entry.prepareRW(OpRecv, fd, buf, length, 0)
+	var ptr unsafe.Pointer
+	if buf != nil {
+		ptr = unsafe.Pointer(&buf[0])
+	}
+	entry.prepareRW(OpRecv, fd, ptr, length, 0)
 	entry.OpcodeFlags = uint32(flags)
 }
 
 // liburing: io_uring_prep_recv_multishot - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_recv_multishot.3.en.html
 func (entry *SubmissionQueueEntry) PrepareRecvMultishot(
 	fd int,
-	addr uintptr,
+	buf []byte,
 	length uint32,
 	flags int,
 ) {
-	entry.PrepareRecv(fd, addr, length, flags)
+	entry.PrepareRecv(fd, buf, length, flags)
 	entry.IoPrio |= RecvMultishot
 }
 
@@ -346,7 +367,7 @@ func (entry *SubmissionQueueEntry) PrepareRecvMsg(
 	msg *syscall.Msghdr,
 	flags uint32,
 ) {
-	entry.prepareRW(OpRecvmsg, fd, uintptr(unsafe.Pointer(msg)), 1, 0)
+	entry.prepareRW(OpRecvmsg, fd, unsafe.Pointer(msg), 1, 0)
 	entry.OpcodeFlags = flags
 }
 
@@ -362,13 +383,13 @@ func (entry *SubmissionQueueEntry) PrepareRecvMsgMultishot(
 
 // liburing: io_uring_prep_remove_buffers - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_remove_buffers.3.en.html
 func (entry *SubmissionQueueEntry) PrepareRemoveBuffers(nr int, bgid int) {
-	entry.prepareRW(OpRemoveBuffers, nr, 0, 0, 0)
+	entry.prepareRW(OpRemoveBuffers, nr, nil, 0, 0)
 	entry.BufIG = uint16(bgid)
 }
 
 // liburing: io_uring_prep_rename - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_rename.3.en.html
-func (entry *SubmissionQueueEntry) PrepareRename(oldPath, netPath []byte) {
-	entry.PrepareRenameat(unix.AT_FDCWD, oldPath, unix.AT_FDCWD, netPath, 0)
+func (entry *SubmissionQueueEntry) PrepareRename(oldPath, newPath []byte, flags uint32) {
+	entry.PrepareRenameat(unix.AT_FDCWD, oldPath, unix.AT_FDCWD, newPath, flags)
 }
 
 // liburing: io_uring_prep_renameat - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_renameat.3.en.html
@@ -376,23 +397,23 @@ func (entry *SubmissionQueueEntry) PrepareRenameat(
 	oldFd int, oldPath []byte, newFd int, newPath []byte, flags uint32,
 ) {
 	entry.prepareRW(OpRenameat, oldFd,
-		uintptr(unsafe.Pointer(&oldPath)), uint32(newFd), uint64(uintptr(unsafe.Pointer(&newPath))))
+		unsafe.Pointer(&oldPath[0]), uint32(newFd), uint64(uintptr(unsafe.Pointer(&newPath[0]))))
 	entry.OpcodeFlags = flags
 }
 
 // liburing: io_uring_prep_send - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_send.3.en.html
 func (entry *SubmissionQueueEntry) PrepareSend(
 	fd int,
-	addr uintptr,
+	buf []byte,
 	length uint32,
 	flags int,
 ) {
-	entry.prepareRW(OpSend, fd, addr, length, 0)
+	entry.prepareRW(OpSend, fd, unsafe.Pointer(&buf[0]), length, 0)
 	entry.OpcodeFlags = uint32(flags)
 }
 
 // liburing: io_uring_prep_send_set_addr - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_send_set_addr.3.en.html
-func (entry *SubmissionQueueEntry) PrepareSendSetAddr(destAddr *syscall.Sockaddr, addrLen uint16) {
+func (entry *SubmissionQueueEntry) PrepareSendSetAddr(destAddr *syscall.RawSockaddrAny, addrLen uint16) {
 	entry.Off = uint64(uintptr(unsafe.Pointer(destAddr)))
 	// FIXME?
 	entry.SpliceFdIn = int32(addrLen)
@@ -400,7 +421,7 @@ func (entry *SubmissionQueueEntry) PrepareSendSetAddr(destAddr *syscall.Sockaddr
 
 // liburing: io_uring_prep_send_zc - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_send_zc.3.en.html
 func (entry *SubmissionQueueEntry) PrepareSendZC(sockFd int, buf []byte, flags int, zcFlags uint32) {
-	entry.prepareRW(OpSendZC, sockFd, uintptr(unsafe.Pointer(&buf)), uint32(len(buf)), 0)
+	entry.prepareRW(OpSendZC, sockFd, unsafe.Pointer(&buf[0]), uint32(len(buf)), 0)
 	entry.OpcodeFlags = uint32(flags)
 	entry.IoPrio = uint16(zcFlags)
 }
@@ -418,7 +439,7 @@ func (entry *SubmissionQueueEntry) PrepareSendMsg(
 	msg *syscall.Msghdr,
 	flags uint32,
 ) {
-	entry.prepareRW(OpSendmsg, fd, uintptr(unsafe.Pointer(msg)), 1, 0)
+	entry.prepareRW(OpSendmsg, fd, unsafe.Pointer(msg), 1, 0)
 	entry.OpcodeFlags = flags
 }
 
@@ -430,27 +451,28 @@ func (entry *SubmissionQueueEntry) PrepareSendmsgZC(fd int, msg *syscall.Msghdr,
 
 // liburing: io_uring_prep_sendto - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_sendto.3.en.html
 func (entry *SubmissionQueueEntry) PrepareSendto(
-	sockFd int, buf []byte, flags int, addr *syscall.Sockaddr, addrLen uint32,
+	sockFd int, buf []byte, flags int, addr *syscall.RawSockaddrAny, addrLen uint32,
 ) {
-	entry.PrepareSend(sockFd, uintptr(unsafe.Pointer(&buf)), uint32(len(buf)), flags)
+	entry.PrepareSend(sockFd, buf, uint32(len(buf)), flags)
 	entry.PrepareSendSetAddr(addr, uint16(addrLen))
 }
 
 // liburing: io_uring_prep_setxattr - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_setxattr.3.en.html
-func (entry *SubmissionQueueEntry) PrepareSetxattr(name, value, path []byte, flags int, length uint32) {
-	entry.prepareRW(OpSetxattr, 0, uintptr(unsafe.Pointer(&name)), length, uint64(uintptr(unsafe.Pointer(&value))))
-	entry.Addr3 = uint64(uintptr(unsafe.Pointer(&path)))
+func (entry *SubmissionQueueEntry) PrepareSetxattr(name, value, path []byte, flags int, length uint) {
+	entry.prepareRW(OpSetxattr, 0, unsafe.Pointer(&name[0]),
+		uint32(length), uint64(uintptr(unsafe.Pointer(&value[0]))))
+	entry.Addr3 = uint64(uintptr(unsafe.Pointer(&path[0])))
 	entry.OpcodeFlags = uint32(flags)
 }
 
 // liburing: io_uring_prep_shutdown - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_shutdown.3.en.html
 func (entry *SubmissionQueueEntry) PrepareShutdown(fd, how int) {
-	entry.prepareRW(OpShutdown, fd, 0, uint32(how), 0)
+	entry.prepareRW(OpShutdown, fd, nil, uint32(how), 0)
 }
 
 // liburing: io_uring_prep_socket - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_socket.3.en.html
 func (entry *SubmissionQueueEntry) PrepareSocket(domain, socketType, protocol int, flags uint32) {
-	entry.prepareRW(OpSocket, domain, 0, uint32(protocol), uint64(socketType))
+	entry.prepareRW(OpSocket, domain, nil, uint32(protocol), uint64(socketType))
 	entry.OpcodeFlags = flags
 }
 
@@ -473,7 +495,7 @@ func (entry *SubmissionQueueEntry) PrepareSocketDirectAlloc(domain, socketType, 
 func (entry *SubmissionQueueEntry) PrepareSplice(
 	fdIn int, offIn int64, fdOut int, offOut int64, nbytes, spliceFlags uint32,
 ) {
-	entry.prepareRW(OpSplice, fdOut, 0, nbytes, uint64(offOut))
+	entry.prepareRW(OpSplice, fdOut, nil, nbytes, uint64(offOut))
 	entry.Addr = uint64(offIn)
 	entry.SpliceFdIn = int32(fdIn)
 	entry.OpcodeFlags = spliceFlags
@@ -481,7 +503,7 @@ func (entry *SubmissionQueueEntry) PrepareSplice(
 
 // liburing: io_uring_prep_statx - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_statx.3.en.html
 func (entry *SubmissionQueueEntry) PrepareStatx(dfd int, path []byte, flags int, mask uint32, statx *unix.Statx_t) {
-	entry.prepareRW(OpStatx, dfd, uintptr(unsafe.Pointer(&path)), mask, uint64(uintptr(unsafe.Pointer(statx))))
+	entry.prepareRW(OpStatx, dfd, unsafe.Pointer(&path[0]), mask, uint64(uintptr(unsafe.Pointer(statx))))
 	entry.OpcodeFlags = uint32(flags)
 }
 
@@ -492,18 +514,18 @@ func (entry *SubmissionQueueEntry) PrepareSymlink(target, linkpath []byte) {
 
 // liburing: io_uring_prep_symlinkat - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_symlinkat.3.en.html
 func (entry *SubmissionQueueEntry) PrepareSymlinkat(target []byte, newdirfd int, linkpath []byte) {
-	entry.prepareRW(OpSymlinkat, newdirfd, uintptr(unsafe.Pointer(&target)), 0, uint64(uintptr(unsafe.Pointer(&linkpath))))
+	entry.prepareRW(OpSymlinkat, newdirfd, unsafe.Pointer(&target[0]), 0, uint64(uintptr(unsafe.Pointer(&linkpath[0]))))
 }
 
 // liburing: io_uring_prep_sync_file_range - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_sync_file_range.3.en.html
 func (entry *SubmissionQueueEntry) PrepareSyncFileRange(fd int, length uint32, offset uint64, flags int) {
-	entry.prepareRW(OpSyncFileRange, fd, 0, length, offset)
+	entry.prepareRW(OpSyncFileRange, fd, nil, length, offset)
 	entry.OpcodeFlags = uint32(flags)
 }
 
 // liburing: io_uring_prep_tee - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_tee.3.en.html
 func (entry *SubmissionQueueEntry) PrepareTee(fdIn, fdOut int, nbytes, spliceFlags uint32) {
-	entry.prepareRW(OpTee, fdOut, 0, nbytes, 0)
+	entry.prepareRW(OpTee, fdOut, nil, nbytes, 0)
 	entry.Addr = 0
 	entry.SpliceFdIn = int32(fdIn)
 	entry.OpcodeFlags = spliceFlags
@@ -511,56 +533,56 @@ func (entry *SubmissionQueueEntry) PrepareTee(fdIn, fdOut int, nbytes, spliceFla
 
 // liburing: io_uring_prep_timeout - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_timeout.3.en.html
 func (entry *SubmissionQueueEntry) PrepareTimeout(spec *syscall.Timespec, count, flags uint32) {
-	entry.prepareRW(OpTimeout, -1, uintptr(unsafe.Pointer(&spec)), 1, uint64(count))
+	entry.prepareRW(OpTimeout, -1, unsafe.Pointer(spec), 1, uint64(count))
 	entry.OpcodeFlags = flags
 }
 
 // liburing: io_uring_prep_timeout_remove - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_timeout_remove.3.en.html
-func (entry *SubmissionQueueEntry) PrepareTimeoutRemove(duration time.Duration, count uint64, flags uint32) {
-	spec := syscall.NsecToTimespec(duration.Nanoseconds())
-	entry.prepareRW(OpTimeoutRemove, -1, uintptr(unsafe.Pointer(&spec)), 1, count)
+func (entry *SubmissionQueueEntry) PrepareTimeoutRemove(userData uint64, flags uint32) {
+	entry.prepareRW(OpTimeoutRemove, -1, nil, 0, userData)
+	entry.Addr = userData
 	entry.OpcodeFlags = flags
 }
 
 // liburing: io_uring_prep_timeout_update - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_timeout_update.3.en.html
-func (entry *SubmissionQueueEntry) PrepareTimeoutUpdate(duration time.Duration, count uint64, flags uint32) {
-	spec := syscall.NsecToTimespec(duration.Nanoseconds())
-	entry.prepareRW(OpTimeoutRemove, -1, uintptr(unsafe.Pointer(&spec)), 1, count)
+func (entry *SubmissionQueueEntry) PrepareTimeoutUpdate(spec *syscall.Timespec, userData uint64, flags uint32) {
+	entry.prepareRW(OpTimeoutRemove, -1, nil, 0, uint64(uintptr(unsafe.Pointer(spec))))
+	entry.Addr = userData
 	entry.OpcodeFlags = flags | TimeoutUpdate
 }
 
 // liburing: io_uring_prep_unlink - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_unlink.3.en.html
-func (entry *SubmissionQueueEntry) PrepareUnlink(path uintptr, flags int) {
+func (entry *SubmissionQueueEntry) PrepareUnlink(path []byte, flags int) {
 	entry.PrepareUnlinkat(unix.AT_FDCWD, path, flags)
 }
 
 // liburing: io_uring_prep_unlinkat - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_unlinkat.3.en.html
-func (entry *SubmissionQueueEntry) PrepareUnlinkat(dfd int, path uintptr, flags int) {
-	entry.prepareRW(OpUnlinkat, dfd, path, 0, 0)
+func (entry *SubmissionQueueEntry) PrepareUnlinkat(dfd int, path []byte, flags int) {
+	entry.prepareRW(OpUnlinkat, dfd, unsafe.Pointer(&path[0]), 0, 0)
 	entry.OpcodeFlags = uint32(flags)
 }
 
 // liburing: io_uring_prep_write - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_write.3.en.html
-func (entry *SubmissionQueueEntry) PrepareWrite(fd int, buf uintptr, nbytes uint32, offset uint64) {
-	entry.prepareRW(OpWrite, fd, buf, nbytes, offset)
+func (entry *SubmissionQueueEntry) PrepareWrite(fd int, buf []byte, nbytes uint32, offset uint64) {
+	entry.prepareRW(OpWrite, fd, unsafe.Pointer(&buf[0]), nbytes, offset)
 }
 
 // liburing: io_uring_prep_write_fixed - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_write_fixed.3.en.html
 func (entry *SubmissionQueueEntry) PrepareWriteFixed(
 	fd int,
-	vectors uintptr,
+	buf []byte,
 	length uint32,
 	offset uint64,
 	index int,
 ) {
-	entry.prepareRW(OpWriteFixed, fd, vectors, length, offset)
+	entry.prepareRW(OpWriteFixed, fd, unsafe.Pointer(&buf[0]), length, offset)
 	entry.BufIG = uint16(index)
 }
 
 // liburing: io_uring_prep_writev - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_writev.3.en.html
 func (entry *SubmissionQueueEntry) PrepareWritev(
 	fd int,
-	iovecs uintptr,
+	iovecs unsafe.Pointer,
 	nrVecs uint32,
 	offset uint64,
 ) {
@@ -570,7 +592,7 @@ func (entry *SubmissionQueueEntry) PrepareWritev(
 // liburing: io_uring_prep_writev2 - https://manpages.debian.org/unstable/liburing-dev/io_uring_prep_writev2.3.en.html
 func (entry *SubmissionQueueEntry) PrepareWritev2(
 	fd int,
-	iovecs uintptr,
+	iovecs unsafe.Pointer,
 	nrVecs uint32,
 	offset uint64,
 	flags int,
@@ -592,6 +614,6 @@ func (entry *SubmissionQueueEntry) PrepareCmdSock(
 	// unused = uintptr(level)
 	// unused = uintptr(optname)
 	// io_uring_prep_rw(IORING_OP_URING_CMD, sqe, fd, nil, 0, 0)
-	entry.prepareRW(OpUringCmd, fd, 0, 0, 0)
+	entry.prepareRW(OpUringCmd, fd, nil, 0, 0)
 	entry.Off = uint64(cmdOp << bit32Offset)
 }

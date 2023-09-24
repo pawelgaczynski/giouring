@@ -140,19 +140,19 @@ func Mmap(fd int, p *Params, sq *SubmissionQueue, cq *CompletionQueue) error {
 		cq.ringSize = sq.ringSize
 	}
 
-	var ringPtr uintptr
-	ringPtr, err = mmap(0, uintptr(sq.ringSize), syscall.PROT_READ|syscall.PROT_WRITE,
+	var ringPtr unsafe.Pointer
+	ringPtr, err = sysMmap(0, uintptr(sq.ringSize), syscall.PROT_READ|syscall.PROT_WRITE,
 		syscall.MAP_SHARED|syscall.MAP_POPULATE, fd,
 		int64(offsqRing))
 	if err != nil {
 		return err
 	}
-	sq.ringPtr = unsafe.Pointer(ringPtr)
+	sq.ringPtr = ringPtr
 
 	if p.features&FeatSingleMMap != 0 {
 		cq.ringPtr = sq.ringPtr
 	} else {
-		ringPtr, err = mmap(0, uintptr(cq.ringSize), syscall.PROT_READ|syscall.PROT_WRITE,
+		ringPtr, err = sysMmap(0, uintptr(cq.ringSize), syscall.PROT_READ|syscall.PROT_WRITE,
 			syscall.MAP_SHARED|syscall.MAP_POPULATE, fd,
 			int64(offcqRing))
 		if err != nil {
@@ -160,19 +160,19 @@ func Mmap(fd int, p *Params, sq *SubmissionQueue, cq *CompletionQueue) error {
 
 			goto err
 		}
-		cq.ringPtr = unsafe.Pointer(ringPtr)
+		cq.ringPtr = ringPtr
 	}
 
 	size = unsafe.Sizeof(SubmissionQueueEntry{})
 	if p.flags&SetupSQE128 != 0 {
 		size += 64
 	}
-	ringPtr, err = mmap(0, size*uintptr(p.sqEntries), syscall.PROT_READ|syscall.PROT_WRITE,
+	ringPtr, err = sysMmap(0, size*uintptr(p.sqEntries), syscall.PROT_READ|syscall.PROT_WRITE,
 		syscall.MAP_SHARED|syscall.MAP_POPULATE, fd, int64(offSQEs))
 	if err != nil {
 		goto err
 	}
-	sq.sqes = (*SubmissionQueueEntry)(unsafe.Pointer(ringPtr))
+	sq.sqes = (*SubmissionQueueEntry)(ringPtr)
 	SetupRingPointers(p, sq, cq)
 
 	return nil
@@ -510,18 +510,19 @@ func MlockSize(entries, flags uint32) (uint64, error) {
 func (ring *Ring) brSetup(nentries uint32, bgid uint16, flags uint32) (*BufAndRing, error) {
 	var br *BufAndRing
 	var reg BufReg
-	var ringSize, brPtr uintptr
+	var ringSize uintptr
+	var brPtr unsafe.Pointer
 	var err error
 
 	reg = BufReg{}
 	ringSize = uintptr(nentries) * unsafe.Sizeof(BufAndRing{})
-	brPtr, err = mmap(
+	brPtr, err = sysMmap(
 		0, ringSize, syscall.PROT_READ|syscall.PROT_WRITE,
 		syscall.MAP_ANONYMOUS|syscall.MAP_PRIVATE, -1, 0)
 	if err != nil {
 		return nil, err
 	}
-	br = (*BufAndRing)(unsafe.Pointer(brPtr))
+	br = (*BufAndRing)(brPtr)
 
 	reg.RingAddr = uint64(uintptr(unsafe.Pointer(br)))
 	reg.RingEntries = nentries

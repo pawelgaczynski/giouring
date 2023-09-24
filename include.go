@@ -187,6 +187,7 @@ const (
 	TimeoutRealtime
 	LinkTimeoutUpdate
 	TimeoutETimeSuccess
+	TimeoutMultishot
 	TimeoutClockMask  = TimeoutBoottime | TimeoutRealtime
 	TimeoutUpdateMask = TimeoutUpdate | LinkTimeoutUpdate
 )
@@ -224,8 +225,6 @@ const (
 	MsgData uint32 = iota
 	MsgSendFd
 )
-
-var msgDataVar = MsgData
 
 const (
 	MsgRingCQESkip uint32 = 1 << iota

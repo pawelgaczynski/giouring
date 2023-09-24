@@ -25,20 +25,54 @@ package giouring
 
 import (
 	"syscall"
-	"unsafe"
+	"testing"
+	"time"
+
+	. "github.com/stretchr/testify/require"
 )
 
-//go:linkname mmap syscall.mmap
-func mmap(addr uintptr, length uintptr, prot int, flags int, fd int, offset int64) (xaddr uintptr, err error)
+func TestProvideAndRemoveBuffers(t *testing.T) {
+	ring, err := CreateRing(16)
+	NoError(t, err)
+	defer ring.QueueExit()
 
-//go:linkname munmap syscall.munmap
-func munmap(addr uintptr, length uintptr) (err error)
+	buffers := make([][]byte, 16)
+	ts := syscall.NsecToTimespec((time.Millisecond).Nanoseconds())
+	for i := 0; i < len(buffers); i++ {
+		buffers[i] = make([]byte, bufferSize)
 
-//go:linkname sockaddr syscall.Sockaddr.sockaddr
-func sockaddr(addr syscall.Sockaddr) (unsafe.Pointer, uint32, error)
+		sqe := ring.GetSQE()
+		NotNil(t, sqe)
 
-//go:linkname anyToSockaddr syscall.anyToSockaddr
-func anyToSockaddr(rsa *syscall.RawSockaddrAny) (syscall.Sockaddr, error)
+		sqe.PrepareProvideBuffers(buffers[i], len(buffers[i]), 1, i, 0)
+		sqe.UserData = 777
 
-// //go:linkname msync syscall.msync
-// func msync(b []byte, flags int) (err error)
+		var cqe *CompletionQueueEvent
+		cqe, err = ring.SubmitAndWaitTimeout(1, &ts, nil)
+		NoError(t, err)
+		NotNil(t, cqe)
+
+		Equal(t, int32(0), cqe.Res)
+		Equal(t, uint64(777), cqe.UserData)
+
+		ring.CQESeen(cqe)
+	}
+
+	for i := 0; i < len(buffers); i++ {
+		sqe := ring.GetSQE()
+		NotNil(t, sqe)
+
+		sqe.PrepareRemoveBuffers(1, i)
+		sqe.UserData = 888
+
+		var cqe *CompletionQueueEvent
+		cqe, err = ring.SubmitAndWaitTimeout(1, &ts, nil)
+		NoError(t, err)
+		NotNil(t, cqe)
+
+		Equal(t, int32(1), cqe.Res)
+		Equal(t, uint64(888), cqe.UserData)
+
+		ring.CQESeen(cqe)
+	}
+}
