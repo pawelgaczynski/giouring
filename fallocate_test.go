@@ -24,21 +24,55 @@
 package giouring
 
 import (
-	"syscall"
-	"unsafe"
+	"os"
+	"testing"
+
+	. "github.com/stretchr/testify/require"
 )
 
-//go:linkname mmap syscall.mmap
-func mmap(addr uintptr, length uintptr, prot int, flags int, fd int, offset int64) (xaddr uintptr, err error)
+const (
+	fallocateSize = 128 * 1024
+)
 
-//go:linkname munmap syscall.munmap
-func munmap(addr uintptr, length uintptr) (err error)
+func TestFallocate(t *testing.T) {
+	testCase(t, testScenario{
+		setup: func(t *testing.T, ring *Ring, ctx testContext) {
+			file, err := os.CreateTemp("", "fallocate")
+			NoError(t, err)
+			_, err = file.WriteString("testdata")
+			NoError(t, err)
+			ctx["file"] = file
+		},
 
-//go:linkname sockaddr syscall.Sockaddr.sockaddr
-func sockaddr(addr syscall.Sockaddr) (unsafe.Pointer, uint32, error)
+		prepares: []prepare{
+			func(t *testing.T, ctx testContext, sqe *SubmissionQueueEntry) {
+				file, ok := ctx["file"].(*os.File)
+				True(t, ok)
+				sqe.PrepareFallocate(int(file.Fd()), 0, 0, fallocateSize)
+				sqe.UserData = 1
+			},
+		},
 
-//go:linkname anyToSockaddr syscall.anyToSockaddr
-func anyToSockaddr(rsa *syscall.RawSockaddrAny) (syscall.Sockaddr, error)
+		result: func(t *testing.T, ctx testContext, cqes []*CompletionQueueEvent) {
+			Equal(t, cqes[0].UserData, uint64(1))
+			Zero(t, cqes[0].Res)
+		},
 
-// //go:linkname msync syscall.msync
-// func msync(b []byte, flags int) (err error)
+		assert: func(t *testing.T, ctx testContext) {
+			file, ok := ctx["file"].(*os.File)
+			True(t, ok)
+			stat, err := os.Stat(file.Name())
+			NoError(t, err)
+			Equal(t, fallocateSize, int(stat.Size()))
+		},
+
+		cleanup: func(ctx testContext) {
+			if val, ok := ctx["file"]; ok {
+				file, fileOk := val.(*os.File)
+				True(t, fileOk)
+				file.Close()
+				os.Remove(file.Name())
+			}
+		},
+	})
+}
